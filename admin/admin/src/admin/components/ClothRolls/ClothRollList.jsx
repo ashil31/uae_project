@@ -43,18 +43,17 @@ const ClothRollList = () => {
   };
 
   const filteredRolls = Array.isArray(clothRolls)
-  ? clothRolls.filter((roll) => {
-      const matchesSearch =
-        typeof roll.rollNo === 'string' &&
-        roll.rollNo.toLowerCase().includes(searchTerm.toLowerCase());
+    ? clothRolls.filter((roll) => {
+        const matchesSearch =
+          typeof roll.rollNo === 'string' &&
+          roll.rollNo.toLowerCase().includes(searchTerm.toLowerCase());
 
-      const matchesStatus =
-        filterStatus === 'all' || roll.status === filterStatus;
+        const matchesStatus =
+          filterStatus === 'all' || roll.status === filterStatus;
 
-      return matchesSearch && matchesStatus;
-    })
-  : [];
-
+        return matchesSearch && matchesStatus;
+      })
+    : [];
 
   const getStatusColor = (status) => {
     switch (status) {
@@ -71,9 +70,9 @@ const ClothRollList = () => {
 
   const stats = {
     total: clothRolls.length,
-    available: clothRolls.filter(r => r.status === 'available').length,
-    assigned: clothRolls.filter(r => r.status === 'assigned').length,
-    used: clothRolls.filter(r => r.status === 'used').length,
+    available: clothRolls.filter((r) => r.status === 'available').length,
+    assigned: clothRolls.filter((r) => r.status === 'assigned').length,
+    used: clothRolls.filter((r) => r.status === 'used').length,
   };
 
   return (
@@ -81,7 +80,9 @@ const ClothRollList = () => {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-gray-900">Cloth Roll Inventory</h2>
+          <h2 className="text-lg font-semibold text-gray-900">
+            Cloth Roll Inventory
+          </h2>
           <p className="text-sm text-gray-600">Manage your cloth roll stock</p>
         </div>
         <button
@@ -149,16 +150,10 @@ const ClothRollList = () => {
                   Roll Number
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Fabric Type
+                  Item & Fabric
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Item Type
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Amount
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Unit
+                  Amount & Unit
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Status
@@ -172,7 +167,6 @@ const ClothRollList = () => {
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {console.log(filteredRolls)}
               {filteredRolls.map((roll) => (
                 <motion.tr
                   key={roll._id}
@@ -183,20 +177,22 @@ const ClothRollList = () => {
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="font-medium text-gray-900">{roll.rollNo}</div>
                   </td>
+                  {/* Item + Fabric column */}
                   <td className="px-6 py-4 whitespace-nowrap text-gray-600">
-                    {roll.fabricType}
+                    <div className="flex flex-col">
+                      <span className="font-medium">{roll.itemType}</span>
+                      <span className="font-medium">{roll.fabricType}</span>
+                    </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-gray-600">
-                    {roll.itemType}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-gray-600">
-                    {roll.amount}
-                  </td>
-                   <td className="px-6 py-4 whitespace-nowrap text-gray-600">
-                    {roll.unitType}
+                    {roll.amount} {roll.unitType}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <span className={`px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(roll.status)}`}>
+                    <span
+                      className={`px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(
+                        roll.status
+                      )}`}
+                    >
                       {roll.status.charAt(0).toUpperCase() + roll.status.slice(1)}
                     </span>
                   </td>

@@ -180,7 +180,7 @@ const ClothRollFormModal = ({ isOpen, onClose, roll }) => {
                           transition={{ duration: 0.2 }}
                           className="absolute z-10 mt-1 w-full bg-white border border-gray-200 rounded-lg shadow-lg"
                         >
-                          {["meters", "kilos"].map((option) => (
+                          {["meters", "kilos", "unit"].map((option) => (
                             <li
                               key={option}
                               onClick={() => {

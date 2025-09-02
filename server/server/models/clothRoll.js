@@ -24,7 +24,7 @@ const clothRollSchema = new mongoose.Schema({
     },
     unitType:{
         type:String,
-        enum:['meters','kilos'],
+        enum:['meters','kilos','unit'],
         required:true
     },
     status:{
