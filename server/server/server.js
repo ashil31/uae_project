@@ -22,12 +22,6 @@ const __dirname = dirname(__filename);
 
 // 1. Compression (FIX: Using the simple, default configuration)
 app.use(compression());
-
-// 2. Security Headers with Helmet
-app.use(helmet({
-  crossOriginResourcePolicy: { policy: "cross-origin" }
-}));
-
 // 3. CORS Configuration
 const corsOptions = {
   origin: [
@@ -41,6 +35,13 @@ const corsOptions = {
   credentials: true,
 };
 app.use(cors(corsOptions));
+
+// 2. Security Headers with Helmet
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" }
+}));
+
+
 
 // 4. Body Parsers (using built-in Express)
 app.use(express.json({ limit: '50mb' }));
