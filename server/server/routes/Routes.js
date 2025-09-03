@@ -16,6 +16,7 @@ import OrderTrackingRoute from './Order/OrderTracking.js';
 import InvoiceRoute from './Order/Invoice.js';
 import AdminReviewRoute from './Admin/AdminReview.js';
 import TailorRoute from './Tailor/Tailor.js';
+import ProductionLogRoute from '../routes/Production/productionLogRoutes.js'
 
 const router = express.Router(); 
 
@@ -37,6 +38,7 @@ router.use('/order-tracking', OrderTrackingRoute);
 router.use('/invoices', InvoiceRoute);
 router.use('/admin-reviews', AdminReviewRoute);
 router.use('/tailors', TailorRoute)
+router.use('/production',ProductionLogRoute);
 
 
 export default router   

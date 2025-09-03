@@ -1,28 +1,31 @@
-import mongoose from 'mongoose';
+import mongoose from "mongoose";
 
-const productionSchema = new mongoose.Schema({
-    tailor: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'User',
-        required: true,
+const productionLogSchema = new mongoose.Schema(
+  {
+    tailorId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Tailor",
+      required: true,
     },
-    clothesMade: {
-        type: Number,
-        required: true,
-        min: 0,
+    orderId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Order",
+      required: true,
     },
-    notes: {
-        type: String,
-        trim: true,
-    },
-    date: {
-        type: Date,
-        default: Date.now,
-    },
-}, {
-    timestamps: true,
-});
+    unitsCompleted: { type: Number, required: true },
+    materialsUsed: [
+      {
+        item: { type: String, required: true },
+        quantity: { type: Number, required: true },
+        unit: { type: String, required: true }, // e.g., "meters", "pieces"
+      },
+    ],
+    date: { type: Date, default: Date.now },
+    note: { type: String },
+  },
+  { timestamps: true }
+);
 
-const Production = mongoose.model('Production', productionSchema);
+const ProductionLog = mongoose.model("ProductionLog", productionLogSchema);
 
-export default Production;
+export default ProductionLog;

@@ -41,31 +41,50 @@ const AssignedOrdersList = ({ orders }) => {
                     <tr>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Product</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Assigned To</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Quantity</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Color</th>
+                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Size</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                     </tr>
                 </thead>
                 <tbody className="bg-white divide-y divide-gray-200">
-                    {orders.map((order) => (
-                        <tr key={order._id}>
-                            <td className="px-6 py-4">
-                                <div className="flex items-center">
-                                    <div className="flex-shrink-0 h-16 w-16">
-                                        <img className="h-16 w-16 rounded-md object-cover" src={order.imageUrl} alt={order.productName} />
+                    {orders.map((order) => {
+                        const product = order.products[0]; // Access first product
+                        const productInfo = product.productId; // productId contains name & images
+                        return (
+                            <tr key={order._id}>
+                                <td className="px-6 py-4">
+                                    <div className="flex items-center">
+                                        <div className="flex-shrink-0 h-16 w-16">
+                                            <img
+                                                className="h-16 w-16 rounded-md object-cover"
+                                                src={productInfo?.images?.[0]?.url || '/placeholder.png'}
+                                                alt={productInfo?.name || 'Product'}
+                                            />
+                                        </div>
+                                        <div className="ml-4">
+                                            <div className="text-sm font-medium text-gray-900">{productInfo?.name || 'Product'}</div>
+                                        </div>
                                     </div>
-                                    <div className="ml-4">
-                                        <div className="text-sm font-medium text-gray-900">{order.productName}</div>
-                                        <div className="text-sm text-gray-500">Qty: {order.quantity}</div>
-                                    </div>
-                                </div>
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-800">
-                                {order.assignedTailor?.name || 'Unknown Tailor'}
-                            </td>
-                            <td className="px-6 py-4 whitespace-nowrap">
-                                <StatusBadge status={order.status} />
-                            </td>
-                        </tr>
-                    ))}
+                                </td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-800">
+                                    {order.assignedTo?.name || 'Unknown Tailor'}
+                                </td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-800">
+                                    {product?.quantity || '-'}
+                                </td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-800">
+                                    {product?.color || '-'}
+                                </td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-800">
+                                    {product?.size || '-'}
+                                </td>
+                                <td className="px-6 py-4 whitespace-nowrap">
+                                    <StatusBadge status={order.status} />
+                                </td>
+                            </tr>
+                        );
+                    })}
                 </tbody>
             </table>
         </motion.div>
