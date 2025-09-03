@@ -33,7 +33,7 @@ const corsOptions = {
   origin: [
     'http://localhost:8080',
     'http://localhost:8081',
-    'https://uae-ecommerce-gamma.vercel.app/',
+    'https://uae-ecommerce-gamma.vercel.app',
     'http://localhost:5173',
     'https://uae-admin-zeta.vercel.app'
   ],
