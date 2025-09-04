@@ -35,8 +35,6 @@ const corsOptions = {
   credentials: true,
 };
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
-
 // 2. Security Headers with Helmet
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
