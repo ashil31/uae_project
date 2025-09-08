@@ -6,12 +6,8 @@ import axios from 'axios';
 import toast from 'react-hot-toast';
 import { getClothRolls, deleteClothRoll } from '../../../store/slices/clothRollSlice';
 
-// This file groups three components used in the admin area:
-// 1) ClothRollList - main list + stats + search/filter
-// 2) ClothRollFormModal - modal used for Add / Edit (posts to /api/cloths/add)
-// 3) DeleteConfirmModal - generic delete confirmation modal
-//
-// Drop this file into your components folder and split into separate files if desired.
+// IMPORT your standalone modal component (adjust path if needed)
+import ClothRollFormModal from './ClothRollFormModal';
 
 /* --------------------- DeleteConfirmModal --------------------- */
 export const DeleteConfirmModal = ({ isOpen, onClose, title = 'Confirm', message = '', onConfirm, isLoading = false }) => {
@@ -30,100 +26,6 @@ export const DeleteConfirmModal = ({ isOpen, onClose, title = 'Confirm', message
             {isLoading ? 'Deleting...' : 'Delete'}
           </button>
         </div>
-      </div>
-    </div>
-  );
-};
-
-/* --------------------- ClothRollFormModal --------------------- */
-export const ClothRollFormModal = ({ isOpen, onClose, initial = null, onSaved }) => {
-  const [form, setForm] = useState({ rollNo: '', amount: '', fabricType: '', unitType: '', itemType: '' });
-  const [submitting, setSubmitting] = useState(false);
-
-  useEffect(() => {
-    if (initial) {
-      setForm({
-        rollNo: initial.rollNo ?? '',
-        amount: initial.amount ?? '',
-        fabricType: initial.fabricType ?? '',
-        unitType: initial.unitType ?? '',
-        itemType: initial.itemType ?? '',
-      });
-    } else {
-      setForm({ rollNo: '', amount: '', fabricType: '', unitType: '', itemType: '' });
-    }
-  }, [initial, isOpen]);
-
-  if (!isOpen) return null;
-
-  const handleChange = (e) => setForm((s) => ({ ...s, [e.target.name]: e.target.value }));
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setSubmitting(true);
-    try {
-      // Basic client-side validation
-      if (!form.amount || Number(form.amount) <= 0) throw new Error('Amount must be a positive number');
-
-      const payload = {
-        rollNo: form.rollNo || undefined,
-        amount: Number(form.amount),
-        fabricType: form.fabricType || undefined,
-        unitType: form.unitType || undefined,
-        itemType: form.itemType || undefined,
-      };
-
-      const { data } = await axios.post('/api/cloths/add', payload);
-
-      toast.success(data?.message || 'Cloth roll added');
-
-      // notify parent so it can refresh table or optimistically add
-      onSaved?.(data?.data ?? null);
-
-      onClose?.();
-    } catch (err) {
-      console.error('Save error', err?.response ?? err);
-      const message = err?.response?.data?.message || err?.message || 'Failed to save cloth roll';
-      toast.error(message);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="bg-white dark:bg-slate-800 rounded-lg shadow p-6 w-full max-w-lg">
-        <div className="flex items-center justify-between">
-          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-50">{initial ? 'Edit Cloth Roll' : 'Add Cloth Roll'}</h3>
-          <button onClick={onClose} className="text-gray-500 hover:text-gray-700"><X /></button>
-        </div>
-
-        <form onSubmit={handleSubmit} className="mt-4 grid grid-cols-1 gap-3">
-          <label className="text-sm text-gray-600">Roll Number (optional)</label>
-          <input name="rollNo" value={form.rollNo} onChange={handleChange} className="px-3 py-2 border rounded" />
-
-          <label className="text-sm text-gray-600 mt-2">Amount</label>
-          <input name="amount" type="number" value={form.amount} onChange={handleChange} className="px-3 py-2 border rounded" required />
-
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="text-sm text-gray-600">Fabric Type</label>
-              <input name="fabricType" value={form.fabricType} onChange={handleChange} className="px-3 py-2 border rounded" />
-            </div>
-            <div>
-              <label className="text-sm text-gray-600">Unit Type</label>
-              <input name="unitType" value={form.unitType} onChange={handleChange} className="px-3 py-2 border rounded" />
-            </div>
-          </div>
-
-          <label className="text-sm text-gray-600">Item Type</label>
-          <input name="itemType" value={form.itemType} onChange={handleChange} className="px-3 py-2 border rounded" />
-
-          <div className="flex justify-end space-x-3 mt-4">
-            <button type="button" onClick={onClose} className="px-4 py-2 rounded border">Cancel</button>
-            <button type="submit" className="px-4 py-2 rounded bg-purple-600 text-white" disabled={submitting}>{submitting ? 'Saving...' : 'Save'}</button>
-          </div>
-        </form>
       </div>
     </div>
   );
@@ -204,9 +106,6 @@ const ClothRollList = () => {
   const handleNewRollSaved = (newRoll) => {
     // prefer to re-fetch from server so aggregated totals and server-side defaults are accurate
     dispatch(getClothRolls());
-
-    // optionally, if you want optimistic behaviour you could push to store directly
-    // but here we keep server as source of truth.
   };
 
   return (
