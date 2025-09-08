@@ -23,6 +23,9 @@ import deleteClothRoll from '../../controllers/Tailor/deleteClothRoll.js';
 import assignClothRoll from '../../controllers/Tailor/assignClothRoll.js';
 import logClothRollUsage from '../../controllers/Tailor/logClothRollUsage.js';
 import getAssignedClothRolls from '../../controllers/Tailor/getAssignedClothRolls.js';
+import getClothAmounts from '../../controllers/Tailor/getClothAmounts.js';
+import { getMasterAssignments } from '../../controllers/Tailor/getMasterAssignments.js';
+import { getTailorsWhoConfirmedOrdersSimple } from '../../controllers/Tailor/getTailorsWhoConfirmedOrdersSimple .js';
 
 const router = express.Router();
 
@@ -41,11 +44,12 @@ router.post('/update', protect, tailor, sendUpdateToMaster);
 
 // Cloth Roll Routes
 router.get('/cloth-rolls', AdminRoute, getClothRolls);
+router.get('/cloth-amount', AdminRoute, getClothAmounts);
 router.post('/create-cloth-roll', AdminRoute, addClothRoll);
 router.put('/:id/edit-cloth-roll', AdminRoute, editClothRoll);
 router.delete('/:id/delete-cloth-roll', AdminRoute, deleteClothRoll);
 
-
+router.get('/master/assignments', protect, tailor, getMasterAssignments);
 // Cloth Roll Assignment to Tailor
 router.post('/assign-cloth-roll', AdminRoute, assignClothRoll);
 
@@ -60,6 +64,7 @@ router.put('/:orderId/assign/:tailorId', AdminRoute, assignOrderToTailor);
 
 // getting assigned order
 router.get('/assigned',AdminRoute,getAssignedOrders)
+router.get('/assinged-all-tailor', AdminRoute, getTailorsWhoConfirmedOrdersSimple)
 
 //getting unassigned order
 router.get('/unassigned',AdminRoute,getUnassignedOrders)

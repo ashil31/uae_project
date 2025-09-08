@@ -20,7 +20,9 @@ const getProducts = async (req, res) => {
       // Special page flags
       onSale,
       newArrivals,
-      bestSellers
+      bestSellers,
+      // New admin status filter: featured | lowstock | outofstock
+      status
     } = req.query;
 
     // Build filter
@@ -70,6 +72,18 @@ const getProducts = async (req, res) => {
       }
     }
 
+    // Status filter (admin) - featured, lowstock, outofstock
+    if (status) {
+      const s = String(status).toLowerCase();
+      if (s === 'featured' || s === 'isfeatured') {
+        filter.isFeatured = true;
+      } else if (s === 'lowstock' || s === 'low-stock' || s === 'low stock') {
+        filter['additionalInfo.stock'] = { $gt: 0, $lt: 10 };
+      } else if (s === 'outofstock' || s === 'out-of-stock' || s === 'out of stock') {
+        filter['additionalInfo.stock'] = { $lte: 0 };
+      }
+    }
+
     // Search filter
     if (search && search.trim()) {
       const searchTerm = search.trim();
@@ -87,15 +101,15 @@ const getProducts = async (req, res) => {
     // Price range filter - updated to handle separate min/max parameters
     if (priceMin !== undefined || priceMax !== undefined) {
       const priceFilter = {};
-      
+
       if (priceMin !== undefined && !isNaN(Number(priceMin))) {
         priceFilter.$gte = Number(priceMin);
       }
-      
+
       if (priceMax !== undefined && !isNaN(Number(priceMax))) {
         priceFilter.$lte = Number(priceMax);
       }
-      
+
       if (Object.keys(priceFilter).length > 0) {
         filter['additionalInfo.price'] = priceFilter;
       }
@@ -180,26 +194,75 @@ const getProducts = async (req, res) => {
     const limitNum = Math.min(100, Math.max(1, Number(limit) || 12)); // Max 100 items per page
     const skip = (pageNum - 1) * limitNum;
 
+    // Prepare promises in parallel:
+    // 1) paginated find + count
+    // 2) active deals for these products (we'll fetch after getting product ids)
+    // 3) facets (available filters with counts) - we compute facets using the same filter (without skip/limit)
+    const productsPromise = Product.find(filter)
+      .sort(sortOption)
+      .skip(skip)
+      .limit(limitNum)
+      .lean()
+      .exec();
 
-    // Execute queries in parallel
-    const [products, total] = await Promise.all([
-      Product.find(filter)
-        .sort(sortOption)
-        .skip(skip)
-        .limit(limitNum)
-        .lean()
-        .exec(),
-      Product.countDocuments(filter).exec()
-    ]);
+    const countPromise = Product.countDocuments(filter).exec();
+
+    // facet aggregation - compute counts for categories, subCategories, brands, colors, sizes, materials
+    // We'll run this without skip/limit so counts represent the full filtered set
+    const facetsPipeline = [
+      { $match: filter },
+      {
+        $facet: {
+          categories: [
+            { $match: { category: { $exists: true, $ne: null } } },
+            { $group: { _id: '$category', count: { $sum: 1 } } },
+            { $sort: { count: -1 } }
+          ],
+          subCategories: [
+            { $match: { subCategory: { $exists: true, $ne: null } } },
+            { $group: { _id: '$subCategory', count: { $sum: 1 } } },
+            { $sort: { count: -1 } }
+          ],
+          brands: [
+            { $match: { brand: { $exists: true, $ne: null } } },
+            { $group: { _id: '$brand', count: { $sum: 1 } } },
+            { $sort: { count: -1 } }
+          ],
+          colors: [
+            { $unwind: { path: '$additionalInfo.color', preserveNullAndEmptyArrays: false } },
+            { $group: { _id: '$additionalInfo.color', count: { $sum: 1 } } },
+            { $sort: { count: -1 } }
+          ],
+          sizes: [
+            { $unwind: { path: '$additionalInfo.size', preserveNullAndEmptyArrays: false } },
+            { $group: { _id: '$additionalInfo.size', count: { $sum: 1 } } },
+            { $sort: { count: -1 } }
+          ],
+          fabrics: [
+            { $unwind: { path: '$materials', preserveNullAndEmptyArrays: false } },
+            { $group: { _id: '$materials', count: { $sum: 1 } } },
+            { $sort: { count: -1 } }
+          ]
+        }
+      }
+    ];
+
+    const facetsPromise = Product.aggregate(facetsPipeline).exec();
+
+    // run products and count in parallel
+    const [products, total, facetsResult] = await Promise.all([productsPromise, countPromise, facetsPromise]);
 
     // Attach deals and calculate discounted prices
     const productIds = products.map(p => p._id);
-    const activeDeals = await Deal.find({
-      product: { $in: productIds },
-      enabled: true,
-      startDate: { $lte: new Date() },
-      endDate: { $gt: new Date() }
-    }).lean().exec();
+    let activeDeals = [];
+    if (productIds.length > 0) {
+      activeDeals = await Deal.find({
+        product: { $in: productIds },
+        enabled: true,
+        startDate: { $lte: new Date() },
+        endDate: { $gt: new Date() }
+      }).lean().exec();
+    }
 
     const dealsMap = new Map();
     activeDeals.forEach(deal => {
@@ -209,7 +272,7 @@ const getProducts = async (req, res) => {
     const updatedProducts = products.map(product => {
       const deal = dealsMap.get(product._id.toString());
       let productWithDeal = { ...product };
-      
+
       if (deal) {
         productWithDeal = {
           ...product,
@@ -225,21 +288,34 @@ const getProducts = async (req, res) => {
           }
         };
       }
-      
+
       return productWithDeal;
     });
 
-    // Get additional data for homepage/featured sections
+    // Convert facets result into friendly shape
+    const facetObj = (facetsResult && facetsResult[0]) || {};
+    const mapFacet = (arr) => (Array.isArray(arr) ? arr.map(i => ({ value: i._id, count: i.count })) : []);
+
+    const availableFilters = {
+      categories: mapFacet(facetObj.categories),
+      subCategories: mapFacet(facetObj.subCategories),
+      brands: mapFacet(facetObj.brands),
+      colors: mapFacet(facetObj.colors),
+      sizes: mapFacet(facetObj.sizes),
+      fabrics: mapFacet(facetObj.fabrics)
+    };
+
+    // Get additional data for homepage/featured sections (unchanged)
     const [featuredProducts, newArrivalsProducts] = await Promise.all([
       Product.find({ isFeatured: true })
         .sort({ createdAt: -1 })
         .limit(12)
         .lean()
         .exec(),
-      Product.find({ 
-        createdAt: { 
+      Product.find({
+        createdAt: {
           $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) // 30 days ago
-        } 
+        }
       })
         .sort({ createdAt: -1 })
         .limit(12)
@@ -276,9 +352,11 @@ const getProducts = async (req, res) => {
             fabrics: fabricArray.length > 0 ? fabricArray : null,
             search: search || null,
             sort,
+            status: status || null,
             specialPage: (category?.toLowerCase() === 'sale' || onSale) ? 'sale' : newArrivals ? 'new-arrivals' : bestSellers ? 'best-sellers' : null
           }
-        }
+        },
+        availableFilters
       },
       // Legacy support - keeping these for backward compatibility
       products: updatedProducts,

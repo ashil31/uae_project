@@ -9,6 +9,7 @@ export const fetchOrders = createAsyncThunk(
   async ({ page = 1, status = '', search = '' }, { rejectWithValue }) => {
     try {
       const response = await adminApi.getOrders({ page, status, search });
+      console.log(response.data);      
       return response.data;
     } catch (error) {
       return rejectWithValue(error.message);

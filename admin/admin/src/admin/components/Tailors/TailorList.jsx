@@ -1,16 +1,16 @@
-import React, { useState, useEffect } from 'react';
-import { useDispatch, useSelector } from 'react-redux';
-import { motion } from 'framer-motion';
-import { Plus, Edit2, Trash2, Search, Filter } from 'lucide-react';
-import { getTailors, deleteTailor } from '../../../store/slices/tailorSlice';
-import TailorFormModal from './TailorFormModal';
-import toast from 'react-hot-toast';
-import DeleteConfirmModal from '../DeleteConfirmModal';
+import React, { useState, useEffect } from "react";
+import { useDispatch, useSelector } from "react-redux";
+import { motion } from "framer-motion";
+import { Plus, Edit2, Trash2, Search, Filter } from "lucide-react";
+import { getTailors, deleteTailor } from "../../../store/slices/tailorSlice";
+import TailorFormModal from "./TailorFormModal";
+import toast from "react-hot-toast";
+import DeleteConfirmModal from "../DeleteConfirmModal";
 
 const TailorList = () => {
   const dispatch = useDispatch();
   const { tailors, loading } = useSelector((state) => state.tailors);
-  const [searchTerm, setSearchTerm] = useState('');
+  const [searchTerm, setSearchTerm] = useState("");
   const [showModal, setShowModal] = useState(false);
   const [editingTailor, setEditingTailor] = useState(null);
   const [confirmModalOpen, setConfirmModalOpen] = useState(false);
@@ -25,15 +25,20 @@ const TailorList = () => {
     setSelectedTailorId(id);
     setConfirmModalOpen(true);
   };
-
+  const skillBgColors = {
+    beginner: "bg-green-100 text-green-800",
+    intermediate: "bg-blue-100 text-blue-800",
+    advanced: "bg-orange-100 text-orange-800",
+    expert: "bg-purple-100 text-purple-800",
+  };
   const handleDelete = async () => {
     if (!selectedTailorId) return;
     setIsDeleting(true);
     try {
       await dispatch(deleteTailor(selectedTailorId)).unwrap();
-      toast.success('Tailor deleted successfully');
+      toast.success("Tailor deleted successfully");
     } catch (error) {
-      toast.error('Failed to delete tailor');
+      toast.error("Failed to delete tailor");
     } finally {
       setIsDeleting(false);
       setConfirmModalOpen(false);
@@ -41,14 +46,15 @@ const TailorList = () => {
     }
   };
 
+  const filteredTailors = Array.isArray(tailors)
+    ? tailors.filter(
+        (tailor) =>
+          tailor &&
+          typeof tailor.username === "string" &&
+          tailor.username.toLowerCase().includes(searchTerm.toLowerCase())
+      )
+    : [];
 
-  const filteredTailors = Array.isArray(tailors) ? tailors.filter(tailor =>
-    tailor &&
-    typeof tailor.name === 'string' &&
-    tailor.name.toLowerCase().includes(searchTerm.toLowerCase())
-  ) : [];
-
-  
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -112,16 +118,33 @@ const TailorList = () => {
                   className="hover:bg-gray-50"
                 >
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="font-medium text-gray-900">{tailor.name}</div>
+                    <div className="font-medium text-gray-900">
+                      {tailor.username.charAt(0).toUpperCase() +
+                        tailor.username.slice(1).toLowerCase()}
+                    </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-gray-600">
-                    {tailor.contact}
+                    {tailor.role}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <span className="px-2 py-1 text-xs font-medium bg-blue-100 text-blue-800 rounded-full">
-                      {tailor.skillLevel}
+                    <span
+                      className={`px-2 py-1 text-xs font-medium rounded-full ${
+                        skillBgColors[
+                          (tailor.skillLevel || "")
+                            .toString()
+                            .trim()
+                            .toLowerCase()
+                        ] || "bg-gray-100 text-gray-800"
+                      }`}
+                    >
+                      {(tailor.skillLevel || "")
+                        .toString()
+                        .charAt(0)
+                        .toUpperCase() +
+                        (tailor.skillLevel || "").toString().slice(1)}
                     </span>
                   </td>
+
                   <td className="px-6 py-4 whitespace-nowrap">
                     <span className="px-2 py-1 text-xs font-medium bg-green-100 text-green-800 rounded-full">
                       Active
@@ -174,7 +197,6 @@ const TailorList = () => {
         isLoading={isDeleting}
         onConfirm={handleDelete}
       />
-
     </div>
   );
 };

@@ -20,9 +20,11 @@ import AddReview from '../../controllers/Product/AddReviewController.js';
 import GetReviews from '../../controllers/Product/GetReviewsController.js';
 import UpdateReviewHelpful from '../../controllers/Product/UpdateReviewHelpfulController.js';
 import processMedia from '../../middlewares/mediaProcessor.js';
+import getAllProducts from '../../controllers/Product/GetAllProducts.js';
 
 // Public routes
 router.get('/', GetProducts);
+router.get('/all', getAllProducts);
 router.get('/categories', GetCategories)
 router.get('/filters', GetFilterOptions)
 router.get('/search', searchProducts)

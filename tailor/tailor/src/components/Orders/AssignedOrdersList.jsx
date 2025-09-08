@@ -1,5 +1,6 @@
 import React from 'react';
 import { motion } from 'framer-motion';
+import { buildImageUrl } from '../../features/tailor/tailorSlice';
 
 // A reusable StatusBadge component for consistent styling
 const StatusBadge = ({ status }) => {
@@ -51,6 +52,7 @@ const AssignedOrdersList = ({ orders }) => {
                     {orders.map((order) => {
                         const product = order.products[0]; // Access first product
                         const productInfo = product.productId; // productId contains name & images
+                        const imageUrl = buildImageUrl(productInfo?.images?.[0]?.url);
                         return (
                             <tr key={order._id}>
                                 <td className="px-6 py-4">
@@ -58,7 +60,7 @@ const AssignedOrdersList = ({ orders }) => {
                                         <div className="flex-shrink-0 h-16 w-16">
                                             <img
                                                 className="h-16 w-16 rounded-md object-cover"
-                                                src={productInfo?.images?.[0]?.url || '/placeholder.png'}
+                                                src={imageUrl}
                                                 alt={productInfo?.name || 'Product'}
                                             />
                                         </div>
@@ -68,7 +70,7 @@ const AssignedOrdersList = ({ orders }) => {
                                     </div>
                                 </td>
                                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-800">
-                                    {order.assignedTo?.name || 'Unknown Tailor'}
+                                    {order.assignedTo?.username || 'Unknown Tailor'}
                                 </td>
                                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-800">
                                     {product?.quantity || '-'}

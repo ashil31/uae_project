@@ -1,18 +1,18 @@
-import Tailor from "../../models/tailor.js";
 import RollAssignment from "../../models/rollAssignment.js";
+import User from "../../models/user.js";
 
 
 
 const deleteTailor = async (req, res) => {
     try {
-        const tailorId = req.params.id;
+        const userId = req.params.id;
 
-       const tailor = await Tailor.findById(tailorId);
+       const tailor = await User.findById(userId);
        if(!tailor){
            return res.status(404).json({message:"Tailor not found"})
        };
 
-       const relatedAssignments = await RollAssignment.find({tailorId});
+       const relatedAssignments = await RollAssignment.find({userId});
        if(relatedAssignments.length > 0){
            return res.status(400).json({message:"Tailor has assigned cloth rolls, cannot be deleted"})
        };

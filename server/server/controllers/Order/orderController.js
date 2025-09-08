@@ -458,7 +458,7 @@ export const assignOrderToTailor = async (req, res) => {
 export const getAssignedOrders = async (req, res) => {
   try {
     const orders = await Order.find({ assignedTo: { $ne: null } })
-      .populate("assignedTo", "name contact skillLevel") // populate tailor details
+      .populate("assignedTo", "username phone skillLevel") // populate tailor details
       .populate("products.productId", "name images"); 
       
     res.json({

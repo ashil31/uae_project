@@ -1,15 +1,139 @@
 import React, { useState, useEffect } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { motion } from 'framer-motion';
-import { Plus, Edit2, Trash2, Search, Package, AlertCircle } from 'lucide-react';
-import { getClothRolls, deleteClothRoll } from '../../../store/slices/clothRollSlice';
-import ClothRollFormModal from './ClothRollFormModal';
+import { Plus, Edit2, Trash2, Search, Package, AlertCircle, X } from 'lucide-react';
+import axios from 'axios';
 import toast from 'react-hot-toast';
-import DeleteConfirmModal from '../DeleteConfirmModal';
+import { getClothRolls, deleteClothRoll } from '../../../store/slices/clothRollSlice';
 
+// This file groups three components used in the admin area:
+// 1) ClothRollList - main list + stats + search/filter
+// 2) ClothRollFormModal - modal used for Add / Edit (posts to /api/cloths/add)
+// 3) DeleteConfirmModal - generic delete confirmation modal
+//
+// Drop this file into your components folder and split into separate files if desired.
+
+/* --------------------- DeleteConfirmModal --------------------- */
+export const DeleteConfirmModal = ({ isOpen, onClose, title = 'Confirm', message = '', onConfirm, isLoading = false }) => {
+  if (!isOpen) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="bg-white dark:bg-slate-800 rounded-lg shadow p-6 w-full max-w-md">
+        <div className="flex items-start justify-between">
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-50">{title}</h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-700"><X /></button>
+        </div>
+        <p className="mt-3 text-sm text-gray-600 dark:text-gray-300">{message}</p>
+        <div className="mt-6 flex justify-end space-x-3">
+          <button onClick={onClose} className="px-4 py-2 rounded border">Cancel</button>
+          <button onClick={onConfirm} className="px-4 py-2 rounded bg-red-600 text-white" disabled={isLoading}>
+            {isLoading ? 'Deleting...' : 'Delete'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+/* --------------------- ClothRollFormModal --------------------- */
+export const ClothRollFormModal = ({ isOpen, onClose, initial = null, onSaved }) => {
+  const [form, setForm] = useState({ rollNo: '', amount: '', fabricType: '', unitType: '', itemType: '' });
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (initial) {
+      setForm({
+        rollNo: initial.rollNo ?? '',
+        amount: initial.amount ?? '',
+        fabricType: initial.fabricType ?? '',
+        unitType: initial.unitType ?? '',
+        itemType: initial.itemType ?? '',
+      });
+    } else {
+      setForm({ rollNo: '', amount: '', fabricType: '', unitType: '', itemType: '' });
+    }
+  }, [initial, isOpen]);
+
+  if (!isOpen) return null;
+
+  const handleChange = (e) => setForm((s) => ({ ...s, [e.target.name]: e.target.value }));
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setSubmitting(true);
+    try {
+      // Basic client-side validation
+      if (!form.amount || Number(form.amount) <= 0) throw new Error('Amount must be a positive number');
+
+      const payload = {
+        rollNo: form.rollNo || undefined,
+        amount: Number(form.amount),
+        fabricType: form.fabricType || undefined,
+        unitType: form.unitType || undefined,
+        itemType: form.itemType || undefined,
+      };
+
+      const { data } = await axios.post('/api/cloths/add', payload);
+
+      toast.success(data?.message || 'Cloth roll added');
+
+      // notify parent so it can refresh table or optimistically add
+      onSaved?.(data?.data ?? null);
+
+      onClose?.();
+    } catch (err) {
+      console.error('Save error', err?.response ?? err);
+      const message = err?.response?.data?.message || err?.message || 'Failed to save cloth roll';
+      toast.error(message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      <div className="bg-white dark:bg-slate-800 rounded-lg shadow p-6 w-full max-w-lg">
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-50">{initial ? 'Edit Cloth Roll' : 'Add Cloth Roll'}</h3>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-700"><X /></button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="mt-4 grid grid-cols-1 gap-3">
+          <label className="text-sm text-gray-600">Roll Number (optional)</label>
+          <input name="rollNo" value={form.rollNo} onChange={handleChange} className="px-3 py-2 border rounded" />
+
+          <label className="text-sm text-gray-600 mt-2">Amount</label>
+          <input name="amount" type="number" value={form.amount} onChange={handleChange} className="px-3 py-2 border rounded" required />
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-sm text-gray-600">Fabric Type</label>
+              <input name="fabricType" value={form.fabricType} onChange={handleChange} className="px-3 py-2 border rounded" />
+            </div>
+            <div>
+              <label className="text-sm text-gray-600">Unit Type</label>
+              <input name="unitType" value={form.unitType} onChange={handleChange} className="px-3 py-2 border rounded" />
+            </div>
+          </div>
+
+          <label className="text-sm text-gray-600">Item Type</label>
+          <input name="itemType" value={form.itemType} onChange={handleChange} className="px-3 py-2 border rounded" />
+
+          <div className="flex justify-end space-x-3 mt-4">
+            <button type="button" onClick={onClose} className="px-4 py-2 rounded border">Cancel</button>
+            <button type="submit" className="px-4 py-2 rounded bg-purple-600 text-white" disabled={submitting}>{submitting ? 'Saving...' : 'Save'}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+/* --------------------- ClothRollList --------------------- */
 const ClothRollList = () => {
   const dispatch = useDispatch();
-  const { clothRolls, loading } = useSelector((state) => state.clothRolls);
+  const { clothRolls = [], loading } = useSelector((state) => state.clothRolls || {});
+
   const [searchTerm, setSearchTerm] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [editingRoll, setEditingRoll] = useState(null);
@@ -42,20 +166,21 @@ const ClothRollList = () => {
     }
   };
 
-  const filteredRolls = Array.isArray(clothRolls)
-    ? clothRolls.filter((roll) => {
-        const matchesSearch =
-          typeof roll.rollNo === 'string' &&
-          roll.rollNo.toLowerCase().includes(searchTerm.toLowerCase());
+  // defensive: ensure clothRolls is an array and remove falsy entries
+  const clothRollsSafe = Array.isArray(clothRolls) ? clothRolls.filter(Boolean) : [];
 
-        const matchesStatus =
-          filterStatus === 'all' || roll.status === filterStatus;
+  const filteredRolls = clothRollsSafe.filter((roll) => {
+    if (!roll) return false;
 
-        return matchesSearch && matchesStatus;
-      })
-    : [];
+    const rollNo = typeof roll.rollNo === 'string' ? roll.rollNo : String(roll.rollNo ?? '');
+    const matchesSearch = rollNo.toLowerCase().includes(String(searchTerm ?? '').toLowerCase());
+    const matchesStatus = filterStatus === 'all' || String(roll.status ?? '').toLowerCase() === filterStatus;
 
-  const getStatusColor = (status) => {
+    return matchesSearch && matchesStatus;
+  });
+
+  const getStatusColor = (statusRaw) => {
+    const status = String(statusRaw ?? '').toLowerCase();
     switch (status) {
       case 'available':
         return 'bg-green-100 text-green-800';
@@ -69,10 +194,19 @@ const ClothRollList = () => {
   };
 
   const stats = {
-    total: clothRolls.length,
-    available: clothRolls.filter((r) => r.status === 'available').length,
-    assigned: clothRolls.filter((r) => r.status === 'assigned').length,
-    used: clothRolls.filter((r) => r.status === 'used').length,
+    total: clothRollsSafe.length,
+    available: clothRollsSafe.filter((r) => String(r?.status ?? '').toLowerCase() === 'available').length,
+    assigned: clothRollsSafe.filter((r) => String(r?.status ?? '').toLowerCase() === 'assigned').length,
+    used: clothRollsSafe.filter((r) => String(r?.status ?? '').toLowerCase() === 'used').length,
+  };
+
+  // Called by modal when a new roll saved
+  const handleNewRollSaved = (newRoll) => {
+    // prefer to re-fetch from server so aggregated totals and server-side defaults are accurate
+    dispatch(getClothRolls());
+
+    // optionally, if you want optimistic behaviour you could push to store directly
+    // but here we keep server as source of truth.
   };
 
   return (
@@ -80,9 +214,7 @@ const ClothRollList = () => {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold text-gray-900">
-            Cloth Roll Inventory
-          </h2>
+          <h2 className="text-lg font-semibold text-gray-900">Cloth Roll Inventory</h2>
           <p className="text-sm text-gray-600">Manage your cloth roll stock</p>
         </div>
         <button
@@ -146,95 +278,89 @@ const ClothRollList = () => {
           <table className="w-full">
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Roll Number
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Item & Fabric
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Amount & Unit
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Status
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Created Date
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Actions
-                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Roll Number</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Item & Fabric</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount & Unit</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Created Date</th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {filteredRolls.map((roll) => (
-                <motion.tr
-                  key={roll._id}
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="hover:bg-gray-50"
-                >
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="font-medium text-gray-900">{roll.rollNo}</div>
-                  </td>
-                  {/* Item + Fabric column */}
-                  <td className="px-6 py-4 whitespace-nowrap text-gray-600">
-                    <div className="flex flex-col">
-                      <span className="font-medium">{roll.itemType}</span>
-                      <span className="font-medium">{roll.fabricType}</span>
-                    </div>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-gray-600">
-                    {roll.amount} {roll.unitType}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <span
-                      className={`px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(
-                        roll.status
-                      )}`}
-                    >
-                      {roll.status.charAt(0).toUpperCase() + roll.status.slice(1)}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-gray-600">
-                    {new Date(roll.createdAt).toLocaleDateString()}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                    <div className="flex items-center space-x-2">
-                      <button
-                        onClick={() => {
-                          setEditingRoll(roll);
-                          setShowModal(true);
-                        }}
-                        className="text-purple-600 hover:text-purple-900"
-                        disabled={roll.status === 'used'}
-                      >
-                        <Edit2 className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => confirmDelete(roll._id)}
-                        className="text-red-600 hover:text-red-900"
-                        disabled={roll.status === 'assigned'}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </td>
-                </motion.tr>
-              ))}
+              {filteredRolls.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="px-6 py-8 text-center text-gray-500">No cloth rolls found.</td>
+                </tr>
+              )}
+
+              {filteredRolls.map((roll) => {
+                const id = roll?._id ?? Math.random().toString(36).slice(2);
+                const rollNo = roll?.rollNo ?? '-';
+                const itemType = roll?.itemType ?? '-';
+                const fabricType = roll?.fabricType ?? '-';
+                const amount = roll?.amount ?? '-';
+                const unitType = roll?.unitType ?? '';
+                const statusStr = String(roll?.status ?? 'unknown');
+                const createdAt = roll?.createdAt ? new Date(roll.createdAt).toLocaleDateString() : '-';
+
+                return (
+                  <motion.tr key={id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="hover:bg-gray-50">
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <div className="font-medium text-gray-900">{rollNo}</div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-gray-600">
+                      <div className="flex flex-col">
+                        <span className="font-medium">{itemType}</span>
+                        <span className="text-sm text-gray-500">{fabricType}</span>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-gray-600">
+                      {amount} {unitType}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap">
+                      <span className={`px-2 py-1 text-xs font-medium rounded-full ${getStatusColor(statusStr)}`}>
+                        {String(statusStr).charAt(0).toUpperCase() + String(statusStr).slice(1)}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-gray-600">{createdAt}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
+                      <div className="flex items-center space-x-2">
+                        <button
+                          onClick={() => {
+                            setEditingRoll(roll);
+                            setShowModal(true);
+                          }}
+                          className="text-purple-600 hover:text-purple-900"
+                          disabled={String(statusStr).toLowerCase() === 'used'}
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => confirmDelete(roll?._id)}
+                          className="text-red-600 hover:text-red-900"
+                          disabled={String(statusStr).toLowerCase() === 'assigned'}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </td>
+                  </motion.tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
       </div>
 
-      {/* Modal */}
+      {/* Modals */}
       <ClothRollFormModal
         isOpen={showModal}
         onClose={() => {
           setShowModal(false);
           setEditingRoll(null);
         }}
-        roll={editingRoll}
+        initial={editingRoll}
+        onSaved={handleNewRollSaved}
       />
 
       <DeleteConfirmModal

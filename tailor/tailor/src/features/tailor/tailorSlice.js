@@ -2,21 +2,6 @@ import { createSlice, createAsyncThunk } from '@reduxjs/toolkit';
 import apiClient from '../../api/apiClient'; 
 import toast from 'react-hot-toast';
 
-// --------------------- Demo Data ---------------------
-const demoTailors = [
-    { _id: 'tailor_1', name: 'John Stitch' },
-    { _id: 'tailor_2', name: 'Jane Seam' },
-    { _id: 'tailor_3', name: 'Sam Weave' },
-];
-
-const demoUnassignedOrders = [
-    { _id: 'order_unassigned_1', name: "Men's Heathered Linen-Blend Shirt", quantity: 5, customization: { name: 'JD', embroidery: 'Left Cuff' } },
-    { _id: 'order_unassigned_2', name: "Men's Crinkle Gauze Long-Sleeve Shirt", quantity: 3, customization: { name: 'MW', embroidery: 'Pocket' } },
-];
-
-const demoAssignedOrders = [
-    { _id: 'order_assigned_1', productName: "Men's Classic Linen Long-Sleeve Shirt", quantity: 2, status: 'In Progress', assignedTailor: demoTailors[0] },
-];
 
 // --------------------- Thunks ---------------------
 
@@ -30,8 +15,7 @@ export const getTailors = createAsyncThunk(
       // Real API call
       const response = await apiClient.get('/tailors', {
         headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
-      });
-
+      });  
       return response.data; // return the array of tailors
     } catch (error) {
       toast.error('Failed to fetch tailors.');
@@ -60,7 +44,6 @@ export const fetchUnassignedOrders = createAsyncThunk(
       const response = await apiClient.get('tailors/unassigned', {
         headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
       });
-      console.log(response.data);
       return response.data.orders; // <-- return the array directly
     } catch (error) {
       toast.error('Failed to fetch unassigned orders.');
@@ -68,6 +51,17 @@ export const fetchUnassignedOrders = createAsyncThunk(
     }
   }
 );
+
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:4000/';
+
+// utils/buildImageUrl.js
+export const buildImageUrl = (url) => {
+  if (!url) return null;
+  if (url.startsWith('http')) return url;
+  const apiBase = API_BASE_URL ; 
+  return apiBase.replace(/\/$/, '') + (url.startsWith('/') ? url : `/${url}`);
+};
+
 
 
 export const fetchAssignedWork = createAsyncThunk(
@@ -77,7 +71,7 @@ export const fetchAssignedWork = createAsyncThunk(
       const response = await apiClient.get('tailors/assigned', {
         headers: { Authorization: `Bearer ${localStorage.getItem('token')}` },
       });
-      console.log(response.data);
+      console.log(response.data.orders);      
       return response.data.orders; // <-- return the array directly
     } catch (error) {
       toast.error('Failed to fetch assigned orders.');

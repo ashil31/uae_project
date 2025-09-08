@@ -29,7 +29,6 @@ const corsOptions = {
     'http://localhost:8081',
     'https://uae-ecommerce-gamma.vercel.app',
     'http://localhost:5173',
-    'https://uae-project-8w4w.vercel.app',
     'https://uae-admin-zeta.vercel.app'
   ],
   methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE'],
