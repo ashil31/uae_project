@@ -22,11 +22,64 @@ const isValidObjectId = (id) => {
  *
  * The frontend expects clothConsumptions to include numeric approvedAmount, allocated and remaining fields.
  */
+/**
+ * GET /tailors/master/assignments?masterTailorId=<optional>
+ *
+ * If masterTailorId is provided, results are scoped to that tailor's assignments.
+ * Otherwise, returns global results (all assignments).
+ */
 export const getMasterAssignments = async (req, res) => {
   try {
-    // Fetch all master assignments (adjust filter if you want only status:'approved' or a date range)
-    const assignments = await RollAssignment.find({})
-      .populate("tailorId", "username firstName lastName name phone")
+    const { masterTailorId } = req.query;
+
+    // Build assignment match filter
+    let assignmentMatch = {};
+
+    // Helper: strict master-role test (case-insensitive)
+    const isMasterRole = (user) => {
+      if (!user) return false;
+      const r = (user.role || "").toString().trim();
+      return r.toLowerCase() === "mastertailor" || r === "MasterTailor";
+    };
+
+    if (masterTailorId) {
+      if (!isValidObjectId(masterTailorId)) {
+        return res.status(400).json({ success: false, message: 'masterTailorId is not a valid id' });
+      }
+      // Ensure the user exists and is a MasterTailor
+      const user = await User.findById(masterTailorId).lean();
+      if (!user) {
+        return res.status(404).json({ success: false, message: 'Master tailor not found' });
+      }
+      if (!isMasterRole(user)) {
+        return res.status(403).json({ success: false, message: 'User is not a MasterTailor' });
+      }
+      assignmentMatch.tailorId = new mongoose.Types.ObjectId(String(masterTailorId));
+    } else {
+      // No specific master ID — find all users with role === 'MasterTailor'
+      const masters = await User.find({ role: "MasterTailor" }).select("_id").lean();
+      if (!masters || masters.length === 0) {
+        // no master tailors — return empty shaped response
+        return res.json({
+          success: true,
+          assignments: [],
+          masterTotals: [],
+          summary: {
+            scopedToTailorId: null,
+            totalAssignments: 0,
+            totalConsumptionRows: 0,
+            totalAssignedAmount: 0,
+            distinctClothAmounts: 0,
+          },
+          perClothCount: []
+        });
+      }
+      assignmentMatch.tailorId = { $in: masters.map((m) => m._id) };
+    }
+
+    // Fetch assignments (populated) for frontend use
+    const assignments = await RollAssignment.find(assignmentMatch)
+      .populate("tailorId", "username firstName lastName name phone role")
       .populate("requestedBy", "username")
       .populate("approvedBy", "username")
       .populate("clothConsumptions.clothAmountId", "fabricType itemType unit amount serialNumber")
@@ -34,11 +87,11 @@ export const getMasterAssignments = async (req, res) => {
       .lean();
 
     // Normalize per-consumption numeric fields for frontend safety
-    const normalized = (assignments || []).map((a) => ({
+    const normalizedAssignments = (assignments || []).map((a) => ({
       ...a,
       clothConsumptions: (a.clothConsumptions || []).map((c) => {
         const approvedAmount = Number(c.approvedAmount ?? c.amount ?? 0);
-        const allocated = Number(c.allocated ?? c.allocation ?? 0); // in case some docs store allocated differently
+        const allocated = Number(c.allocated ?? c.allocation ?? 0);
         const remaining = Math.max(0, approvedAmount - allocated);
         return {
           ...c,
@@ -49,81 +102,173 @@ export const getMasterAssignments = async (req, res) => {
       }),
     }));
 
-    // Compute masterTotals: aggregate sums per clothAmountId
-    // Compute masterTotals: aggregate sums per clothAmountId but also capture consumption-level fields
-    const agg = await RollAssignment.aggregate([
+    // Aggregation pipeline grouping by normalized fabric/item/unit
+    const pipeline = [
+      { $match: assignmentMatch },
       { $unwind: "$clothConsumptions" },
-      {
-        $group: {
-          _id: "$clothConsumptions.clothAmountId",
-          totalAssigned: { $sum: "$clothConsumptions.amount" },
-          // take the first non-null values from the consumption rows (if available)
-          fabricTypeFromConsumption: { $first: "$clothConsumptions.fabricType" },
-          itemTypeFromConsumption: { $first: "$clothConsumptions.itemType" },
-          unitTypeFromConsumption: { $first: "$clothConsumptions.unitType" },
-        },
-      },
-      // (optional) remove groups where _id is null if any stray rows exist
-      { $match: { _id: { $ne: null } } },
-      // lookup the ClothAmount doc for availability and canonical fields
+
       {
         $lookup: {
-          from: "clothamounts",              // collection name - ensure this matches your actual collection name
-          localField: "_id",
+          from: "clothamounts",
+          localField: "clothConsumptions.clothAmountId",
           foreignField: "_id",
-          as: "clothDocs",
-        },
+          as: "consClothDoc"
+        }
       },
-      { $unwind: { path: "$clothDocs", preserveNullAndEmptyArrays: true } },
-      // project the shape we want
+      { $unwind: { path: "$consClothDoc", preserveNullAndEmptyArrays: true } },
+
+      {
+        $addFields: {
+          _fabric: {
+            $trim: {
+              input: {
+                $ifNull: [
+                  "$clothConsumptions.fabricType",
+                  "$consClothDoc.fabricType",
+                  "$consClothDoc.fabric",
+                  ""
+                ]
+              }
+            }
+          },
+          _item: {
+            $trim: {
+              input: {
+                $ifNull: [
+                  "$clothConsumptions.itemType",
+                  "$consClothDoc.itemType",
+                  "$consClothDoc.item",
+                  ""
+                ]
+              }
+            }
+          },
+          _unit: {
+            $trim: {
+              input: {
+                $ifNull: [
+                  "$clothConsumptions.unitType",
+                  "$consClothDoc.unit",
+                  "$consClothDoc.unitType",
+                  "meters"
+                ]
+              }
+            }
+          },
+          _assignedAmount: { $ifNull: ["$clothConsumptions.amount", 0] },
+          _clothAmountId: "$clothConsumptions.clothAmountId"
+        }
+      },
+
+      {
+        $group: {
+          _id: {
+            fabricLower: { $toLower: { $ifNull: ["$_fabric", ""] } },
+            itemLower: { $toLower: { $ifNull: ["$_item", ""] } },
+            unitLower: { $toLower: { $ifNull: ["$_unit", "meters"] } }
+          },
+          fabricDisplay: { $first: "$_fabric" },
+          itemDisplay: { $first: "$_item" },
+          unitDisplay: { $first: "$_unit" },
+          totalAssigned: { $sum: "$_assignedAmount" },
+          rows: { $sum: 1 },
+          clothAmountIds: { $addToSet: { $cond: [{ $ifNull: ["$_clothAmountId", false] }, "$_clothAmountId", null] } }
+        }
+      },
+
+      {
+        $addFields: {
+          clothAmountIds: {
+            $filter: {
+              input: "$clothAmountIds",
+              as: "id",
+              cond: { $ne: ["$$id", null] }
+            }
+          }
+        }
+      },
+
+      {
+        $lookup: {
+          from: "clothamounts",
+          let: { ids: "$clothAmountIds" },
+          pipeline: [
+            { $match: { $expr: { $in: ["$_id", { $ifNull: ["$$ids", []] }] } } },
+            { $group: { _id: null, totalAvailable: { $sum: { $ifNull: ["$amount", 0] } } } }
+          ],
+          as: "availAgg"
+        }
+      },
+
       {
         $project: {
-          _id: 1,
+          _id: 0,
+          key: "$_id",
+          fabricType: "$fabricDisplay",
+          itemType: "$itemDisplay",
+          unit: "$unitDisplay",
           totalAssigned: 1,
-          fabricTypeFromConsumption: 1,
-          itemTypeFromConsumption: 1,
-          unitTypeFromConsumption: 1,
-          clothDoc: "$clothDocs",
-        },
+          rows: 1,
+          clothAmountIds: 1,
+          available: { $ifNull: [{ $arrayElemAt: ["$availAgg.totalAvailable", 0] }, null] }
+        }
       },
-    ]);
 
-    console.log("Aggregation result:", agg);
+      { $sort: { totalAssigned: -1 } }
+    ];
 
-    // Map to masterTotals using consumption fields first, falling back to clothDoc fields
-    const masterTotals = agg.map((a) => {
-      const id = String(a._id);
-      const doc = a.clothDoc ?? null;
-      // prefer consumption-level fields when present; fallback to clothDoc fields
-      const fabricType = a.fabricTypeFromConsumption ?? doc?.fabricType ?? doc?.fabric ?? doc?.fabric_type ?? null;
-      const itemType = a.itemTypeFromConsumption ?? doc?.itemType ?? doc?.item ?? doc?.item_type ?? null;
-      const unit = a.unitTypeFromConsumption ?? doc?.unit ?? doc?.unitType ?? null;
-      const available = doc && typeof doc.amount === "number" ? doc.amount : null;
+    const grouped = await RollAssignment.aggregate(pipeline);
 
-      return {
-        clothAmountId: id,
-        totalAssigned: Number(a.totalAssigned || 0),
-        available,
-        fabricType,
-        itemType,
-        unit,
-        clothDoc: doc,
-      };
-    });
+    const masterTotals = grouped.map((g) => ({
+      fabricType: g.fabricType || null,
+      itemType: g.itemType || null,
+      unit: g.unit || null,
+      totalAssigned: Number(g.totalAssigned || 0),
+      rows: Number(g.rows || 0),
+      clothAmountIds: (g.clothAmountIds || []).map((id) => String(id)),
+      available: typeof g.available === "number" ? g.available : null,
+    }));
 
+    // summary metrics for UI
+    const totalAssignments = normalizedAssignments.length;
+    const totalConsumptionRows = normalizedAssignments.reduce((acc, a) => acc + (a.clothConsumptions ? a.clothConsumptions.length : 0), 0);
+    const totalAssignedAmount = normalizedAssignments.reduce((acc, a) => {
+      const sumForAssignment = (a.clothConsumptions || []).reduce((s, c) => s + (Number(c.approvedAmount ?? c.amount ?? 0)), 0);
+      return acc + sumForAssignment;
+    }, 0);
+    const distinctClothAmounts = masterTotals.reduce((acc, m) => acc + (Array.isArray(m.clothAmountIds) ? m.clothAmountIds.length : 0), 0);
 
-    console.log(masterTotals);
+    const perClothCount = masterTotals.map((m) => ({
+      fabricType: m.fabricType,
+      itemType: m.itemType,
+      unit: m.unit,
+      totalAssigned: m.totalAssigned,
+      rows: m.rows,
+      available: m.available,
+      clothAmountIds: m.clothAmountIds,
+    }));
 
     return res.json({
       success: true,
-      assignments: normalized,
+      assignments: normalizedAssignments,
       masterTotals,
+      summary: {
+        scopedToTailorId: masterTailorId ?? null,
+        totalAssignments,
+        totalConsumptionRows,
+        totalAssignedAmount,
+        distinctClothAmounts,
+      },
+      perClothCount,
     });
   } catch (err) {
-    console.error("getMasterAssignments error:", err && err.stack ? err.stack : err);
+    console.error("getMasterAssignments (grouped, master role check) error:", err && err.stack ? err.stack : err);
     return res.status(500).json({ success: false, message: "Server error fetching master assignments" });
   }
 };
+
+
+
 
 /**
  * POST /tailors/master/allocate

@@ -17,7 +17,7 @@ import apiClient from "../api/apiClient";
 function capitalize(str) {
   if (str === null || str === undefined) return "";
   const s = String(str);
-  return s.length ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+  return s.length ? s.charAt(0).toUpperCase() + s.slice(1) : "";
 }
 
 const emptyConsumption = (overrides = {}) => ({
@@ -28,6 +28,59 @@ const emptyConsumption = (overrides = {}) => ({
   amount: "",
   ...overrides,
 });
+
+/* small frontend validator for Mongo ObjectId */
+const looksLikeObjectId = (id) => {
+  if (!id || typeof id !== "string") return false;
+  return /^[0-9a-fA-F]{24}$/.test(id);
+};
+
+/**
+ * Try many common places for a real DB id.
+ * Returns a string ObjectId if found, otherwise null.
+ */
+const resolveClothAmountRealId = (clothAmountItem) => {
+  if (!clothAmountItem) return null;
+
+  // prefer explicit resolved id stored previously
+  if (
+    clothAmountItem.__resolvedObjectId &&
+    looksLikeObjectId(String(clothAmountItem.__resolvedObjectId))
+  ) {
+    return String(clothAmountItem.__resolvedObjectId);
+  }
+
+  // top-level _id might already be a real ObjectId
+  if (clothAmountItem._id && looksLikeObjectId(String(clothAmountItem._id))) {
+    return String(clothAmountItem._id);
+  }
+
+  // some servers embed real ids under these shapes
+  const raw = clothAmountItem.raw ?? {};
+  const candidates = [
+    raw._id,
+    raw.clothAmountId,
+    raw.clothAmountId && raw.clothAmountId._id,
+    raw.clothDoc && raw.clothDoc._id,
+    raw.rollId,
+    raw.rollId && raw.rollId._id,
+    clothAmountItem.rollId,
+    clothAmountItem.clothAmountId,
+    clothAmountItem.serialNumber, // not usually an ObjectId but check
+  ];
+
+  for (const cand of candidates) {
+    if (!cand && cand !== 0) continue;
+    try {
+      const s = String(cand);
+      if (looksLikeObjectId(s)) return s;
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  return null;
+};
 
 /* ----------------- MaterialCalculator (unchanged) ----------------- */
 function MaterialCalculator({ products = [], clothRolls = [] }) {
@@ -91,7 +144,11 @@ function MaterialCalculator({ products = [], clothRolls = [] }) {
     );
 
     const firstRoll = (Array.isArray(clothRolls) ? clothRolls : []).find(
-      (r) => r && (r.remainingMeters || r.amount || r.lengthMeters)
+      (r) =>
+        r &&
+        (Number(r.remainingMeters) ||
+          Number(r.amount) ||
+          Number(r.lengthMeters))
     );
     const rollLength = firstRoll
       ? Number(
@@ -343,6 +400,13 @@ export default function AssignRollsPage() {
   const [localError, setLocalError] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
 
+  // Helper: safe numeric coercion for availability
+  const toNumberSafe = (v, fallback = 0) => {
+    if (v === null || v === undefined) return fallback;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : fallback;
+  };
+
   // fetch masterTotals (preferred shape)
   useEffect(() => {
     let mounted = true;
@@ -350,28 +414,71 @@ export default function AssignRollsPage() {
       try {
         setLoadingRolls(true);
         const res = await apiClient.get("/tailors/master/assignments");
-        console.log(res.data);        
+        console.log("master assignments:", res.data);
         const payload = res?.data ?? {};
 
-        if (Array.isArray(payload.masterTotals) && payload.masterTotals.length) {
+        if (
+          Array.isArray(payload.masterTotals) &&
+          payload.masterTotals.length
+        ) {
           setServerMasterTotals(payload.masterTotals);
-          const arr = payload.masterTotals.map((mt) => ({
-            _id: mt.clothAmountId ?? mt._id,
-            fabricType: mt.fabricType ?? mt.clothDoc?.fabricType ?? "",
-            itemType: mt.itemType ?? mt.clothDoc?.itemType ?? "",
-            remainingMeters:
-              typeof mt.totalAssigned === "number"
-                ? mt.totalAssigned
-                : mt.clothDoc?.amount ?? 0,
-            unitType: mt.unit ?? mt.clothDoc?.unit ?? "m",
-            serialNumber: mt.clothDoc?.serialNumber,
-            raw: mt,
-          }));
+          const arr = payload.masterTotals.map((mt) => {
+            // try to resolve a real DB id from a few common fields
+            const candidateIds = [
+              mt.clothAmountId,
+              mt.clothDoc && mt.clothDoc._id,
+              mt.clothDoc && mt.clothDoc.clothAmountId,
+              mt._id,
+              mt.key,
+              mt.rollId,
+              mt.rollId && mt.rollId._id,
+            ];
+
+            // pick first candidate that looks like an ObjectId (24 hex chars)
+            const looksLikeObjectId = (id) =>
+              !!id && typeof id === "string" && /^[0-9a-fA-F]{24}$/.test(id);
+
+            let resolvedId = null;
+            for (const cand of candidateIds) {
+              if (looksLikeObjectId(String(cand))) {
+                resolvedId = String(cand);
+                break;
+              }
+            }
+
+            // fallback: keep mt.clothAmountId || mt._id || synthetic key (existing behavior)
+            const computedId =
+              resolvedId ??
+              mt.clothAmountId ??
+              mt._id ??
+              mt.key ??
+              `${mt.fabricType}_${mt.itemType}_${mt.unit}`;
+
+            const rawAvailable =
+              mt.available ??
+              mt.totalAssigned ??
+              mt.clothDoc?.amount ??
+              mt.totalAvailable ??
+              0;
+            const remaining = toNumberSafe(rawAvailable, 0);
+
+            return {
+              _id: computedId,
+              fabricType: mt.fabricType ?? mt.clothDoc?.fabricType ?? "",
+              itemType: mt.itemType ?? mt.clothDoc?.itemType ?? "",
+              remainingMeters: remaining,
+              unitType: mt.unit ?? mt.clothDoc?.unit ?? "m",
+              serialNumber:
+                mt.clothDoc?.serialNumber ?? mt.serialNumber ?? null,
+              raw: mt,
+              __resolvedObjectId: resolvedId, // helpful for debugging; optional
+            };
+          });
           if (mounted) setClothRolls(arr);
           return;
         }
 
-        // fallback shapes
+        // fallback shapes (when server returns clothAmount docs or other arrays)
         const fallbackList = Array.isArray(payload.data)
           ? payload.data
           : Array.isArray(payload.clothAmounts)
@@ -381,17 +488,26 @@ export default function AssignRollsPage() {
           : Array.isArray(payload)
           ? payload
           : [];
-        const arr = fallbackList.map((r) => ({
-          _id: r._id ?? r.id,
-          fabricType: r.fabricType ?? r.itemType ?? "",
-          itemType: r.itemType ?? "",
-          remainingMeters: Number(
-            r.remainingMeters ?? r.amount ?? r.lengthMeters ?? 0
-          ),
-          unitType: r.unit ?? "m",
-          serialNumber: r.serialNumber ?? r.rollNo,
-          raw: r,
-        }));
+        const arr = fallbackList.map((r) => {
+          // compute remaining robustly
+          const rawAvailable =
+            r.available ??
+            r.remainingMeters ??
+            r.totalAssigned ??
+            r.amount ??
+            r.lengthMeters ??
+            0;
+          const remaining = toNumberSafe(rawAvailable, 0);
+          return {
+            _id: r._id ?? r.id,
+            fabricType: r.fabricType ?? r.itemType ?? "",
+            itemType: r.itemType ?? "",
+            remainingMeters: remaining,
+            unitType: r.unit ?? "m",
+            serialNumber: r.serialNumber ?? r.rollNo,
+            raw: r,
+          };
+        });
         if (mounted) setClothRolls(arr);
       } catch (err) {
         console.error(err);
@@ -410,7 +526,6 @@ export default function AssignRollsPage() {
       try {
         setLoadingTailors(true);
         const res = await apiClient.get("/tailors/assigned-all-tailor");
-        // Updated: prefer res.data.tailors if present (your API shape)
         const data = res?.data ?? {};
         const items = Array.isArray(data.tailors)
           ? data.tailors
@@ -433,12 +548,25 @@ export default function AssignRollsPage() {
   /* ---------- helpers for multi-row assignment ---------- */
   const clothAmounts = Array.isArray(clothRolls) ? clothRolls : [];
 
+  // Robust availability extraction — always returns a Number
   const getAmountAvailable = (ca) => {
     if (!ca) return 0;
-    if (typeof ca.remainingMeters === "number") return ca.remainingMeters;
-    if (typeof ca.amount === "number") return ca.amount;
-    if (typeof ca.totalAmount === "number") return ca.totalAmount;
-    if (typeof ca.available === "number") return ca.available;
+    // prefer remainingMeters (already coerced at load), else fallback to other fields
+    if (ca.remainingMeters !== undefined && ca.remainingMeters !== null) {
+      return toNumberSafe(ca.remainingMeters, 0);
+    }
+    if (ca.available !== undefined && ca.available !== null)
+      return toNumberSafe(ca.available, 0);
+    if (ca.amount !== undefined && ca.amount !== null)
+      return toNumberSafe(ca.amount, 0);
+    if (ca.totalAmount !== undefined && ca.totalAmount !== null)
+      return toNumberSafe(ca.totalAmount, 0);
+    if (ca.totalAssigned !== undefined && ca.totalAssigned !== null)
+      return toNumberSafe(ca.totalAssigned, 0);
+    // try nested clothDoc.amount if present
+    if (ca.raw && ca.raw.clothDoc && ca.raw.clothDoc.amount !== undefined) {
+      return toNumberSafe(ca.raw.clothDoc.amount, 0);
+    }
     return 0;
   };
 
@@ -454,7 +582,7 @@ export default function AssignRollsPage() {
     const map = {};
     formData.consumptions.forEach((c) => {
       const id = String(c.clothAmountId || "");
-      const amt = Number(c.amount || 0);
+      const amt = toNumberSafe(c.amount || 0, 0);
       if (!id) return;
       map[id] = (map[id] || 0) + (isNaN(amt) ? 0 : amt);
     });
@@ -480,12 +608,12 @@ export default function AssignRollsPage() {
         );
         return;
       }
-      const num = Number(c.amount);
+      const num = toNumberSafe(c.amount || 0, NaN);
       if (!c.amount || isNaN(num) || num <= 0) {
         setLocalError(`Row ${i + 1}: enter a valid amount (> 0).`);
         return;
       }
-      const available = amountAvailableMap[String(c.clothAmountId)] || 0;
+      const available = amountAvailableMap[String(c.clothAmountId)] ?? 0;
       if (num > available) {
         setLocalError(
           `Row ${
@@ -563,7 +691,7 @@ export default function AssignRollsPage() {
     if (!c) return "Unknown";
     const fabric = c.fabricType ?? c.fabric ?? c.fabric_type ?? "";
     const item = c.itemType ?? c.item ?? c.item_type ?? "";
-    const available = getAmountAvailable(c);
+    const available = getAmountAvailable(c); // guaranteed Number now
     const unit = c.unitType ?? c.unit ?? "";
     const titlePart =
       [pretty(fabric), pretty(item)].filter(Boolean).join(" / ") ||
@@ -571,10 +699,67 @@ export default function AssignRollsPage() {
     return `${titlePart} — ${available} ${unit || ""}`;
   };
 
-  /* ---------- submission (batch) ---------- */
+  /* ---------- submission (batch or per-consumption master) ---------- */
+
+  /**
+   * submitAssignments:
+   * - If each consumption row contains parentAssignmentId & parentConsumptionId, call master endpoint per row:
+   *     POST /tailors/master/allocate-to-tailor
+   *     body: { parentAssignmentId, parentConsumptionId, targetTailorId, amount, unitType }
+   * - Otherwise fall back to batch endpoint:
+   *     POST /tailors/assign-cloth-roll
+   *
+   * Returns the axios response like the server returns.
+   */
   const submitAssignments = async (payload) => {
-    // Correct endpoint: POST /tailors/assign-cloth-roll
-    return await apiClient.post("/tailors/assign-cloth-roll", payload);
+    // if every consumption row already contains parent IDs -> use master endpoint per consumption
+    const consumptions = Array.isArray(payload.clothConsumptions)
+      ? payload.clothConsumptions
+      : [];
+
+    const allHaveParentIds =
+      consumptions.length > 0 &&
+      consumptions.every((c) => c.parentAssignmentId && c.parentConsumptionId);
+
+    if (allHaveParentIds) {
+      // call per consumption sequentially so parent allocation constraints are respected
+      const results = [];
+      for (const c of consumptions) {
+        const body = {
+          parentAssignmentId: c.parentAssignmentId,
+          parentConsumptionId: c.parentConsumptionId,
+          targetTailorId: payload.tailorId,
+          amount: c.amount,
+          unitType: c.unitType || c.unit || "meters",
+        };
+        // server expects these exact fields; bubble up any error
+        const res = await apiClient.post(
+          "/tailors/master/allocate-to-tailor",
+          body
+        );
+        results.push(res.data);
+      }
+      // normalize return shape so caller can handle it
+      return {
+        data: {
+          allocations: results,
+          message: "Allocated per consumption (master endpoint)",
+        },
+      };
+    }
+
+    // fallback: try the batch endpoint first (keeps existing aggregate UI working)
+    try {
+      return await apiClient.post("/tailors/assign-cloth-roll", payload);
+    } catch (batchErr) {
+      // if batch fails, try to surface the real server error for easier debugging
+      console.warn(
+        "Batch endpoint failed:",
+        batchErr?.response?.data ?? batchErr?.message ?? batchErr
+      );
+      // Re-throw to be handled by caller
+      throw batchErr;
+    }
   };
 
   const handleSubmitInline = async (e) => {
@@ -588,86 +773,151 @@ export default function AssignRollsPage() {
       return;
     }
     setSubmitting(true);
+
+    // Build clothConsumptions but resolve clothAmountId -> real ObjectId when possible
+    const processedConsumptions = [];
+    let hadNonObjectId = false;
+    let abortBecauseMissingId = false;
+    const missingIdRows = [];
+
+    formData.consumptions.forEach((c, idx) => {
+      const base = {
+        unitType: c.unitType,
+        amount: toNumberSafe(c.amount, 0),
+      };
+      if (String(c.fabricType || "").trim())
+        base.fabricType = c.fabricType.trim();
+      if (String(c.itemType || "").trim()) base.itemType = c.itemType.trim();
+
+      const selId = String(c.clothAmountId || "");
+      const found = clothAmounts.find((x) => String(x._id) === selId) || null;
+
+      // Try to resolve a DB ObjectId for clothAmount
+      const resolved = resolveClothAmountRealId(found);
+
+      if (resolved) {
+        // resolved is an ObjectId string — prefer sending clothAmountId
+        base.clothAmountId = resolved;
+      } else {
+        // try to detect a real rollId on the selected item (server accepts rollId too)
+        const maybeRollId =
+          (found &&
+            (found.rollId ||
+              found.raw?.rollId ||
+              found.raw?.clothDoc?.rollId)) ||
+          null;
+        if (maybeRollId && looksLikeObjectId(String(maybeRollId))) {
+          base.rollId = String(maybeRollId);
+        } else {
+          // no actionable id found — mark as missing so we can block submission
+          hadNonObjectId = true;
+          abortBecauseMissingId = true;
+          missingIdRows.push({
+            row: idx + 1,
+            candidate: selId || found?._id || null,
+          });
+          // don't add a clothIdentifier fallback — server rejects that shape
+        }
+      }
+
+      // preserve parent ids if user somehow filled them
+      if (c.parentAssignmentId) base.parentAssignmentId = c.parentAssignmentId;
+      if (c.parentConsumptionId)
+        base.parentConsumptionId = c.parentConsumptionId;
+
+      processedConsumptions.push(base);
+    });
+
+    if (abortBecauseMissingId) {
+      // stop submission and inform the user which rows are invalid — safer than sending clothIdentifier
+      const rowsText = missingIdRows
+        .map((r) => `Row ${r.row} (${r.candidate || "unknown"})`)
+        .join(", ");
+      toast.error(
+        `Cannot assign — the following rows are not mapped to a DB id: ${rowsText}. Please re-select valid cloth items / rolls.`
+      );
+      setSubmitting(false);
+      return;
+    }
+
+    // hadNonObjectId used only for a non-blocking notice if desired; we already blocked above, so this is optional
+    if (hadNonObjectId) {
+      // note: not necessary after abort; kept for compatibility if you change behaviour later
+      // toast("Some selected cloth items were not mapped to DB ids — payload sent without clothAmountId for those rows. Check console for details.", { icon: "⚠️", duration: 6000 });
+    }
+
     const payload = {
       tailorId: formData.tailorId,
       assignedDate: formData.assignedDate,
-      clothConsumptions: formData.consumptions.map((c) => {
-        const row = {
-          clothAmountId: c.clothAmountId,
-          unitType: c.unitType,
-          amount: Number(c.amount),
-        };
-        if (String(c.fabricType || "").trim())
-          row.fabricType = c.fabricType.trim();
-        if (String(c.itemType || "").trim()) row.itemType = c.itemType.trim();
-        return row;
-      }),
+      clothConsumptions: processedConsumptions,
     };
 
     try {
       const res = await submitAssignments(payload);
 
-      if (res?.data) {
-        const data = res.data;
+      // The submitAssignments returns either axios response OR a normalized object for per-row master calls.
+      const data = res?.data ?? res;
 
-        // prefer masterTotals if returned
-        if (Array.isArray(data.masterTotals) && data.masterTotals.length) {
-          setServerMasterTotals(data.masterTotals);
-          const arr = data.masterTotals.map((mt) => ({
+      // Keep your existing update/merge logic but when updating clothRolls ensure numeric coercion
+      if (Array.isArray(data.masterTotals) && data.masterTotals.length) {
+        setServerMasterTotals(data.masterTotals);
+        const arr = data.masterTotals.map((mt) => {
+          const rawAvailable =
+            mt.available ?? mt.totalAssigned ?? mt.clothDoc?.amount ?? 0;
+          const remaining = toNumberSafe(rawAvailable, 0);
+          return {
             _id: mt.clothAmountId ?? mt._id,
             fabricType: mt.fabricType ?? mt.clothDoc?.fabricType ?? "",
             itemType: mt.itemType ?? mt.clothDoc?.itemType ?? "",
-            remainingMeters:
-              typeof mt.available === "number"
-                ? mt.available
-                : mt.clothDoc?.amount ?? 0,
+            remainingMeters: remaining,
             unitType: mt.unit ?? mt.clothDoc?.unit ?? "m",
             serialNumber: mt.clothDoc?.serialNumber,
             raw: mt,
-          }));
-          setClothRolls(arr);
-        } else if (Array.isArray(data.updatedClothAmounts) && data.updatedClothAmounts.length) {
-          // fallback to updatedClothAmounts
-          const arr = data.updatedClothAmounts.map((r) => ({
-            _id: r._id,
-            fabricType: r.fabricType ?? r.fabric ?? r.fabric_type ?? "",
-            itemType: r.itemType ?? r.item ?? r.item_type ?? "",
-            remainingMeters: typeof r.amount === "number" ? r.amount : 0,
-            unitType: r.unit ?? r.unitType ?? "m",
-            serialNumber: r.serialNumber ?? r.rollNo,
-            raw: r,
-          }));
-          // merge into existing clothRolls, replacing matching ids
-          setClothRolls((prev) => {
-            const map = {};
-            prev.forEach((p) => (map[String(p._id)] = p));
-            arr.forEach((u) => (map[String(u._id)] = u));
-            return Object.values(map);
-          });
-        }
-
-        setSuccessData({
-          message: data.message || "Assignments created",
-          payload: data,
+          };
         });
-        toast.success(data.message || "Assignments created");
-
-        // reset form
-        setFormData({
-          tailorId: "",
-          assignedDate: new Date().toISOString().split("T")[0],
-          consumptions: [emptyConsumption()],
+        setClothRolls(arr);
+      } else if (
+        Array.isArray(data.updatedClothAmounts) &&
+        data.updatedClothAmounts.length
+      ) {
+        const arr = data.updatedClothAmounts.map((r) => ({
+          _id: r._id,
+          fabricType: r.fabricType ?? r.fabric ?? r.fabric_type ?? "",
+          itemType: r.itemType ?? r.item ?? r.item_type ?? "",
+          remainingMeters: toNumberSafe(r.amount, 0),
+          unitType: r.unit ?? r.unitType ?? "m",
+          serialNumber: r.serialNumber ?? r.rollNo,
+          raw: r,
+        }));
+        setClothRolls((prev) => {
+          const map = {};
+          prev.forEach((p) => (map[String(p._id)] = p));
+          arr.forEach((u) => (map[String(u._id)] = u));
+          return Object.values(map);
         });
-      } else {
-        toast.success("Assignments created");
-        setFormData({
-          tailorId: "",
-          assignedDate: new Date().toISOString().split("T")[0],
-          consumptions: [emptyConsumption()],
-        });
+      } else if (data.allocations) {
+        // response from per-consumption master calls (our normalized shape)
+        // optionally we could merge parentAssignment updates if included; for now show success
       }
+
+      setSuccessData({
+        message:
+          data.message ||
+          data?.allocations?.[0]?.message ||
+          "Assignments created",
+        payload: data,
+      });
+      toast.success(data.message || "Assignments created");
+
+      // reset form
+      setFormData({
+        tailorId: "",
+        assignedDate: new Date().toISOString().split("T")[0],
+        consumptions: [emptyConsumption()],
+      });
     } catch (err) {
-      console.error(err);
+      // show server message if available
+      console.error("Assignment error response:", err?.response?.data ?? err);
       toast.error(
         err?.response?.data?.message ||
           err?.message ||
@@ -743,7 +993,6 @@ export default function AssignRollsPage() {
                       : "-- Choose a tailor --"}
                   </option>
                   {(tailors || [])
-                    // keep the Tailor-only filter but if role missing, still show
                     .filter((t) =>
                       typeof t.role === "string"
                         ? t.role.trim().toLowerCase() === "tailor"

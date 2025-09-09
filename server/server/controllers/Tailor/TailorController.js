@@ -1,4 +1,5 @@
 import Assignment from '../../models/Assignment.js'; // Assuming you have an Assignment model
+import Order from '../../models/order.js';
 import Production from '../../models/Production.js'; // Assuming you have a Production model
 import Update from '../../models/Update.js';       // Assuming you have an Update model
 
@@ -8,10 +9,9 @@ import Update from '../../models/Update.js';       // Assuming you have an Updat
 export const getMyAssignedWork = async (req, res) => {
     try {
         // We get the tailor's ID from the authenticated user token
-        const tailorId = req.user.userId;
+        const tailorId = req.user._id;
 
-        const assignments = await Assignment.find({ tailor: tailorId })
-            .populate('clothRoll') // Populates details from the ClothRoll model
+        const assignments = await Order.find({ assignedTo: tailorId })
             .sort({ createdAt: -1 });
 
         if (!assignments) {
