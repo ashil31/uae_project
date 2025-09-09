@@ -5,7 +5,7 @@ import getTailors from '../../controllers/Tailor/getTailors.js';
 import addTailor from '../../controllers/Tailor/addTailor.js';
 import editTailor from '../../controllers/Tailor/editTailor.js';
 import deleteTailor from '../../controllers/Tailor/deleteTailor.js';
-import { assignOrderToTailor,getAssignedOrders,getUnassignedOrders } from "../../controllers/Order/orderController.js";
+import { assignOrderToTailor,getAssignedOrders,getUnassignedOrders,rejectAssignedOrder } from "../../controllers/Order/orderController.js";
 // --- Tailor-facing controllers ---
 import { protect, tailor } from '../../middlewares/authMiddleware.js'; 
 import {
@@ -68,5 +68,8 @@ router.get('/assigned-all-tailor', AdminRoute, getTailorsWhoConfirmedOrdersSimpl
 
 //getting unassigned order
 router.get('/unassigned',AdminRoute,getUnassignedOrders)
+
+//reject order
+ router.put('/:orderId/reject',AdminRoute,rejectAssignedOrder)
 
 export default router;

@@ -489,3 +489,30 @@ export const getUnassignedOrders = async (req, res) => {
     res.status(500).json({ message: "Error fetching unassigned orders", error });
   }
 };
+// Admin/Tailor: Reject (unassign) an order
+export const rejectAssignedOrder = async (req, res) => {
+  try {
+    const { orderId } = req.params;
+
+    const order = await Order.findById(orderId);
+    if (!order) {
+      return res.status(404).json({ success: false, message: "Order not found" });
+    }
+
+    // Only allow rejection if order is currently assigned
+    if (!order.assignedTo) {
+      return res.status(400).json({ success: false, message: "Order is not assigned to any tailor" });
+    }
+
+    order.assignedTo = null; // Unassign the order
+    await order.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Order has been unassigned successfully",
+      order
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: "Error unassigning order", error: error.message });
+  }
+};
