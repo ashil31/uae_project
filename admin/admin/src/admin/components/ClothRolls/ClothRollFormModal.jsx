@@ -2,10 +2,7 @@ import React, { useState, useEffect } from "react";
 import { useDispatch } from "react-redux";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, ChevronDown } from "lucide-react";
-import {
-  addClothRoll,
-  updateClothRoll,
-} from "../../../store/slices/clothRollSlice";
+import { addClothRoll, updateClothRoll } from "../../../store/slices/clothRollSlice";
 import toast from "react-hot-toast";
 
 const ClothRollFormModal = ({ isOpen, onClose, roll }) => {
@@ -14,11 +11,11 @@ const ClothRollFormModal = ({ isOpen, onClose, roll }) => {
     rollNo: "",
     amount: "",
     fabricType: "",
-    unitType: "meters", // default
+    unitType: "meters",
     itemType: "",
   });
   const [loading, setLoading] = useState(false);
-  const [unitOpen, setUnitOpen] = useState(false); // track select open state
+  const [unitOpen, setUnitOpen] = useState(false);
 
   useEffect(() => {
     if (roll) {
@@ -45,21 +42,33 @@ const ClothRollFormModal = ({ isOpen, onClose, roll }) => {
     setLoading(true);
 
     try {
+      // Prepare data
       const data = {
-        ...formData,
-        length: Number(formData.length),
+        amount: Number(formData.amount),
+        fabricType: formData.fabricType,
+        unitType: formData.unitType,
+        itemType: formData.itemType,
       };
 
-      if (roll) {
-        await dispatch(updateClothRoll({ id: roll._id, data })).unwrap();
-        toast.success("Cloth roll updated successfully");
-      } else {
+      if (!roll) {
+        // Adding new roll requires rollNo
+        if (!formData.rollNo) {
+          toast.error("Roll number is required");
+          setLoading(false);
+          return;
+        }
+        data.rollNo = formData.rollNo;
         await dispatch(addClothRoll(data)).unwrap();
         toast.success("Cloth roll added successfully");
+      } else {
+        // Editing: skip rollNo to avoid duplicate error
+        await dispatch(updateClothRoll({ id: roll._id, data })).unwrap();
+        toast.success("Cloth roll updated successfully");
       }
+
       onClose();
     } catch (error) {
-      toast.error(error.message || "Failed to save cloth roll");
+      toast.error(error?.message || "Failed to save cloth roll");
     } finally {
       setLoading(false);
     }
@@ -97,24 +106,24 @@ const ClothRollFormModal = ({ isOpen, onClose, roll }) => {
 
             {/* Form */}
             <form onSubmit={handleSubmit} className="p-6 space-y-4">
-              {/* Roll Number */}
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Roll Number
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={formData.rollNo}
-                  onChange={(e) =>
-                    setFormData({ ...formData, rollNo: e.target.value })
-                  }
-                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                  placeholder="e.g., ROLL1001"
-                />
-              </div>
+              {!roll && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Roll Number
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={formData.rollNo}
+                    onChange={(e) =>
+                      setFormData({ ...formData, rollNo: e.target.value })
+                    }
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                    placeholder="e.g., ROLL1001"
+                  />
+                </div>
+              )}
 
-              {/* Fabric */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Fabric
@@ -130,7 +139,6 @@ const ClothRollFormModal = ({ isOpen, onClose, roll }) => {
                 />
               </div>
 
-              {/* Amount + Unit Type (side by side) */}
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -149,7 +157,6 @@ const ClothRollFormModal = ({ isOpen, onClose, roll }) => {
                   />
                 </div>
 
-                {/* Custom Unit Type Dropdown */}
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">
                     Unit Type
@@ -170,7 +177,6 @@ const ClothRollFormModal = ({ isOpen, onClose, roll }) => {
                       </motion.div>
                     </button>
 
-                    {/* Dropdown menu */}
                     <AnimatePresence>
                       {unitOpen && (
                         <motion.ul
@@ -203,7 +209,6 @@ const ClothRollFormModal = ({ isOpen, onClose, roll }) => {
                 </div>
               </div>
 
-              {/* Item Type */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">
                   Item Type
@@ -219,7 +224,6 @@ const ClothRollFormModal = ({ isOpen, onClose, roll }) => {
                 />
               </div>
 
-              {/* Buttons */}
               <div className="flex items-center justify-end space-x-3 pt-4">
                 <button
                   type="button"

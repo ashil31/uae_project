@@ -253,14 +253,15 @@ const ClothRollList = () => {
 
       {/* Modals */}
       <ClothRollFormModal
-        isOpen={showModal}
-        onClose={() => {
-          setShowModal(false);
-          setEditingRoll(null);
-        }}
-        initial={editingRoll}
-        onSaved={handleNewRollSaved}
-      />
+  isOpen={showModal}
+  onClose={() => {
+    setShowModal(false);
+    setEditingRoll(null);
+  }}
+  roll={editingRoll} // corrected
+  onSaved={handleNewRollSaved}
+/>
+
 
       <DeleteConfirmModal
         isOpen={confirmModalOpen}
