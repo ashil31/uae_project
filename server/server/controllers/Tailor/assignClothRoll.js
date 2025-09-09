@@ -1,5 +1,3 @@
-// controllers/assignClothRoll.js
-// (hardened, improved error handling & logging, consolidated totals per fabric+item+unit)
 import mongoose from 'mongoose';
 import RollAssignment from '../../models/rollAssignment.js';
 import ClothAmount from '../../models/clothAmount.js';

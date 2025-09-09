@@ -2,25 +2,34 @@ import React, { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { useForm } from "react-hook-form";
 import { toast } from "react-hot-toast";
-import { Ruler, UserCheck, CheckCircle2, Search } from "lucide-react";
+import {
+  Ruler,
+  UserCheck,
+  CheckCircle2,
+  Search,
+  Plus,
+  Minus,
+  User,
+} from "lucide-react";
 import apiClient from "../api/apiClient";
 
-// Small fallback for product recipes (used only if API fails)
-const productRecipesFallback = {
-  bomber_jacket: {
-    _id: "bomber_jacket",
-    name: "Bomber Jacket",
-    baseFabricMetersPerUnit: 2.5,
-    materials: { fabric: 2.5 },
-  },
-};
-
+/* ----------------- helpers ----------------- */
 function capitalize(str) {
-  if (!str && str !== "") return "";
+  if (str === null || str === undefined) return "";
   const s = String(str);
   return s.length ? s.charAt(0).toUpperCase() + s.slice(1) : s;
 }
 
+const emptyConsumption = (overrides = {}) => ({
+  clothAmountId: "",
+  fabricType: "",
+  itemType: "",
+  unitType: "meters",
+  amount: "",
+  ...overrides,
+});
+
+/* ----------------- MaterialCalculator (unchanged) ----------------- */
 function MaterialCalculator({ products = [], clothRolls = [] }) {
   const [filters, setFilters] = useState({
     category: "",
@@ -34,14 +43,15 @@ function MaterialCalculator({ products = [], clothRolls = [] }) {
 
   const normalizedProducts = useMemo(
     () =>
-      products.map((p) => ({
+      (products || []).map((p) => ({
         _id: p._id ?? p.id ?? p.name,
-        name: p.name ?? p.title ?? p.productName,
+        name: p.name ?? p.title ?? p.productName ?? "Unnamed product",
         category: p.category ?? p.Category ?? "",
         subcategory: p.subcategory ?? p.subCategory ?? "",
         brand: p.brand ?? p.Brand ?? "",
-        baseFabricMetersPerUnit:
-          p.baseFabricMetersPerUnit ?? p.baseFabricMeters ?? p.baseMeters,
+        baseFabricMetersPerUnit: Number(
+          p.baseFabricMetersPerUnit ?? p.baseFabricMeters ?? p.baseMeters ?? 2.5
+        ),
         materials: p.materials ?? p.materialList ?? p.components ?? {},
       })),
     [products]
@@ -50,26 +60,31 @@ function MaterialCalculator({ products = [], clothRolls = [] }) {
   const productMap = useMemo(() => {
     const map = {};
     normalizedProducts.forEach((p) => (map[p._id] = p));
-    Object.values(productRecipesFallback).forEach((p) => {
-      if (!map[p._id]) map[p._id] = p;
-    });
     return map;
   }, [normalizedProducts]);
 
-  useEffect(() => setSelectedProductId(""), [filters]);
+  useEffect(() => {
+    setSelectedProductId("");
+    setCalculated(null);
+  }, [filters]);
 
   useEffect(() => {
-    if (!selectedProductId || quantity <= 0) return setCalculated(null);
+    if (
+      !selectedProductId ||
+      !productMap[selectedProductId] ||
+      Number(quantity) <= 0
+    ) {
+      setCalculated(null);
+      return;
+    }
+
     const prod = productMap[selectedProductId];
-    if (!prod) return setCalculated(null);
+    const baseMeters = Number(prod.baseFabricMetersPerUnit || 2.5);
+    const totalMeters = +(baseMeters * Number(quantity)).toFixed(2);
 
-    const baseMeters = Number(prod.baseFabricMetersPerUnit ?? 2.5);
-    const totalMeters = +(baseMeters * quantity).toFixed(2);
-
-    // simple materials calc
     const calculatedMaterials = Object.entries(prod.materials || {}).reduce(
       (acc, [k, v]) => {
-        acc[k] = +(v * quantity).toFixed(2);
+        acc[k] = +(Number(v || 0) * Number(quantity)).toFixed(2);
         return acc;
       },
       {}
@@ -79,7 +94,12 @@ function MaterialCalculator({ products = [], clothRolls = [] }) {
       (r) => r && (r.remainingMeters || r.amount || r.lengthMeters)
     );
     const rollLength = firstRoll
-      ? firstRoll.remainingMeters ?? firstRoll.amount ?? firstRoll.lengthMeters
+      ? Number(
+          firstRoll.remainingMeters ??
+            firstRoll.amount ??
+            firstRoll.lengthMeters ??
+            50
+        )
       : 50;
     const rollsNeeded = Math.ceil(totalMeters / Math.max(1, rollLength));
 
@@ -100,8 +120,13 @@ function MaterialCalculator({ products = [], clothRolls = [] }) {
     [normalizedProducts]
   );
   const subcategories = useMemo(() => {
-    const all = normalizedProducts.map((p) => p.subcategory).filter(Boolean);
-    if (!filters.category) return [...new Set(all)];
+    if (!filters.category) {
+      return [
+        ...new Set(
+          normalizedProducts.map((p) => p.subcategory).filter(Boolean)
+        ),
+      ];
+    }
     return [
       ...new Set(
         normalizedProducts
@@ -111,6 +136,7 @@ function MaterialCalculator({ products = [], clothRolls = [] }) {
       ),
     ];
   }, [normalizedProducts, filters.category]);
+
   const brands = useMemo(() => {
     let list = normalizedProducts;
     if (filters.category)
@@ -127,6 +153,7 @@ function MaterialCalculator({ products = [], clothRolls = [] }) {
         Calculator
       </h2>
 
+      {/* Calculator UI (unchanged) */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
         <label className="block">
           <div className="text-sm font-medium text-gray-700">Category</div>
@@ -190,7 +217,7 @@ function MaterialCalculator({ products = [], clothRolls = [] }) {
             className="mt-1 block w-full p-2 border-gray-300 rounded-md shadow-sm"
           >
             <option value="">-- Choose a product --</option>
-            {Object.values(productMap)
+            {normalizedProducts
               .filter((p) => {
                 if (filters.category && p.category !== filters.category)
                   return false;
@@ -232,12 +259,10 @@ function MaterialCalculator({ products = [], clothRolls = [] }) {
             value={quantity}
             onChange={(e) => {
               const val = e.target.value;
-              // allow empty string, but block negatives
-              if (val === "" || Number(val) >= 0) {
-                setQuantity(val);
-              }
+              if (val === "" || Number(val) >= 0) setQuantity(Number(val || 0));
             }}
             className="mt-1 block w-full p-2 border-gray-300 rounded-md shadow-sm"
+            min={0}
           />
         </label>
       </div>
@@ -258,6 +283,28 @@ function MaterialCalculator({ products = [], clothRolls = [] }) {
               <div>
                 <strong>Total fabric meters:</strong> {calculated.totalMeters} m
               </div>
+              <div>
+                <strong>Roll length used:</strong> {calculated.rollLength} m
+              </div>
+              <div>
+                <strong>Rolls needed:</strong> {calculated.rollsNeeded}
+              </div>
+            </div>
+
+            <div className="md:col-span-2">
+              <strong>Materials breakdown:</strong>
+              <ul className="mt-2 list-disc pl-5">
+                {Object.entries(calculated.calculatedMaterials).map(
+                  ([k, v]) => (
+                    <li key={k}>
+                      {k}: {v}
+                    </li>
+                  )
+                )}
+                {Object.keys(calculated.calculatedMaterials).length === 0 && (
+                  <li>No material data</li>
+                )}
+              </ul>
             </div>
           </div>
         </div>
@@ -266,6 +313,7 @@ function MaterialCalculator({ products = [], clothRolls = [] }) {
   );
 }
 
+/* ----------------- AssignRollsPage (now with inline multi-row assign UI) ----------------- */
 export default function AssignRollsPage() {
   const { register, handleSubmit, reset, watch, setValue } = useForm({
     defaultValues: {
@@ -276,56 +324,53 @@ export default function AssignRollsPage() {
     },
   });
 
-  const [clothRolls, setClothRolls] = useState([]);
+  const [clothRolls, setClothRolls] = useState([]); // normalized items used in rows
   const [tailors, setTailors] = useState([]);
-  const [products, setProducts] = useState([]);
-  const [assignments, setAssignments] = useState([]);
   const [serverMasterTotals, setServerMasterTotals] = useState([]);
 
   const [loadingRolls, setLoadingRolls] = useState(true);
   const [loadingTailors, setLoadingTailors] = useState(true);
-  const [loadingProducts, setLoadingProducts] = useState(true);
-  const [loadingAssignments, setLoadingAssignments] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [successData, setSuccessData] = useState(null);
 
+  // inline form data (multi-row) — mirrors your modal structure
+  const [formData, setFormData] = useState({
+    tailorId: "",
+    assignedDate: new Date().toISOString().split("T")[0],
+    consumptions: [emptyConsumption()],
+  });
+
+  const [localError, setLocalError] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
 
-  const watchedRollId = watch("rollId");
-  const watchedTailorId = watch("tailorId");
-  const watchedAssignMeters = watch("assignMeters");
-  const watchedProductId = watch("productId");
-
-  // Fetch cloth rolls (masterTotals preferred)
+  // fetch masterTotals (preferred shape)
   useEffect(() => {
     let mounted = true;
-    const fetchClothRolls = async () => {
+    (async () => {
       try {
         setLoadingRolls(true);
         const res = await apiClient.get("/tailors/master/assignments");
         const payload = res?.data ?? {};
-        if (
-          Array.isArray(payload.masterTotals) &&
-          payload.masterTotals.length
-        ) {
+
+        if (Array.isArray(payload.masterTotals) && payload.masterTotals.length) {
           setServerMasterTotals(payload.masterTotals);
           const arr = payload.masterTotals.map((mt) => ({
             _id: mt.clothAmountId ?? mt._id,
             fabricType: mt.fabricType ?? mt.clothDoc?.fabricType ?? "",
             itemType: mt.itemType ?? mt.clothDoc?.itemType ?? "",
             remainingMeters:
-              typeof mt.available === "number"
-                ? mt.available
+              typeof mt.totalAssigned === "number"
+                ? mt.totalAssigned
                 : mt.clothDoc?.amount ?? 0,
             unitType: mt.unit ?? mt.clothDoc?.unit ?? "m",
             serialNumber: mt.clothDoc?.serialNumber,
-            rawMasterTotal: mt,
+            raw: mt,
           }));
           if (mounted) setClothRolls(arr);
           return;
         }
 
-        // fallback: try simpler payload shapes
+        // fallback shapes
         const fallbackList = Array.isArray(payload.data)
           ? payload.data
           : Array.isArray(payload.clothAmounts)
@@ -336,10 +381,15 @@ export default function AssignRollsPage() {
           ? payload
           : [];
         const arr = fallbackList.map((r) => ({
-          ...r,
+          _id: r._id ?? r.id,
+          fabricType: r.fabricType ?? r.itemType ?? "",
+          itemType: r.itemType ?? "",
           remainingMeters: Number(
             r.remainingMeters ?? r.amount ?? r.lengthMeters ?? 0
           ),
+          unitType: r.unit ?? "m",
+          serialNumber: r.serialNumber ?? r.rollNo,
+          raw: r,
         }));
         if (mounted) setClothRolls(arr);
       } catch (err) {
@@ -348,19 +398,26 @@ export default function AssignRollsPage() {
       } finally {
         if (mounted) setLoadingRolls(false);
       }
-    };
-    fetchClothRolls();
+    })();
     return () => (mounted = false);
   }, []);
 
+  // fetch tailors — use assigned-all-tailor endpoint
   useEffect(() => {
     let mounted = true;
-    const fetchTailors = async () => {
+    (async () => {
       try {
         setLoadingTailors(true);
-        const res = await apiClient.get("/tailors/assinged-all-tailor");
-        console.log(res.data);
-        const items = Array.isArray(res.data) ? res.data : res.data?.data ?? [];
+        const res = await apiClient.get("/tailors/assigned-all-tailor");
+        // Updated: prefer res.data.tailors if present (your API shape)
+        const data = res?.data ?? {};
+        const items = Array.isArray(data.tailors)
+          ? data.tailors
+          : Array.isArray(data)
+          ? data
+          : Array.isArray(data.data)
+          ? data.data
+          : [];
         if (mounted) setTailors(items);
       } catch (err) {
         console.error(err);
@@ -368,86 +425,262 @@ export default function AssignRollsPage() {
       } finally {
         if (mounted) setLoadingTailors(false);
       }
-    };
-    fetchTailors();
+    })();
     return () => (mounted = false);
   }, []);
 
-  // Only show users whose role === 'Tailor' (case-insensitive)
-  const tailorsFiltered = useMemo(
-    () =>
-      tailors.filter(
-        (t) =>
-          typeof t.role === "string" && t.role.trim().toLowerCase() === "tailor"
-      ),
-    [tailors]
-  );
+  /* ---------- helpers for multi-row assignment ---------- */
+  const clothAmounts = Array.isArray(clothRolls) ? clothRolls : [];
+
+  const getAmountAvailable = (ca) => {
+    if (!ca) return 0;
+    if (typeof ca.remainingMeters === "number") return ca.remainingMeters;
+    if (typeof ca.amount === "number") return ca.amount;
+    if (typeof ca.totalAmount === "number") return ca.totalAmount;
+    if (typeof ca.available === "number") return ca.available;
+    return 0;
+  };
+
+  const amountAvailableMap = useMemo(() => {
+    const map = {};
+    clothAmounts.forEach((c) => {
+      map[String(c._id)] = getAmountAvailable(c);
+    });
+    return map;
+  }, [clothAmounts]);
+
+  const requestedPerClothAmount = useMemo(() => {
+    const map = {};
+    formData.consumptions.forEach((c) => {
+      const id = String(c.clothAmountId || "");
+      const amt = Number(c.amount || 0);
+      if (!id) return;
+      map[id] = (map[id] || 0) + (isNaN(amt) ? 0 : amt);
+    });
+    return map;
+  }, [formData.consumptions]);
 
   useEffect(() => {
-    let mounted = true;
-    const fetchProducts = async () => {
-      try {
-        setLoadingProducts(true);
-        const res = await apiClient.get("/products/all");
-        const d = res?.data ?? {};
-        let list = Array.isArray(d)
-          ? d
-          : Array.isArray(d.products)
-          ? d.products
-          : Array.isArray(d.data)
-          ? d.data
-          : Array.isArray(d.items)
-          ? d.items
-          : [];
-        if (!list.length) list = Object.values(productRecipesFallback);
-        const normalized = list.map((p) => ({
-          ...p,
-          _id: p._id ?? p.id ?? p.name,
-          name: p.name ?? p.title ?? p.productName,
-        }));
-        if (mounted) setProducts(normalized);
-      } catch (err) {
-        console.error(err);
-        setProducts(Object.values(productRecipesFallback));
-        toast.error("Failed to fetch products, using fallback");
-      } finally {
-        if (mounted) setLoadingProducts(false);
-      }
-    };
-    fetchProducts();
-    return () => (mounted = false);
-  }, []);
+    // validate rows whenever consumptions or tailorId change
+    setLocalError("");
+    if (!formData.tailorId) return;
 
-  useEffect(() => {
-    let mounted = true;
-    const fetchAssignments = async () => {
-      try {
-        setLoadingAssignments(true);
-        const res = await apiClient.get("/assignments");
-        console.log(res.data);
-        const payload = res?.data ?? {};
-        const arr = Array.isArray(payload)
-          ? payload
-          : Array.isArray(payload.assignments)
-          ? payload.assignments
-          : Array.isArray(payload.data)
-          ? payload.data
-          : [];
-        if (mounted) setAssignments(arr);
-      } catch (err) {
-        console.error(err);
-        toast.error("Failed to fetch assignments");
-      } finally {
-        if (mounted) setLoadingAssignments(false);
+    for (let i = 0; i < formData.consumptions.length; i++) {
+      const c = formData.consumptions[i];
+      if (!c.clothAmountId) {
+        setLocalError(`Row ${i + 1}: please select a cloth item.`);
+        return;
       }
-    };
-    fetchAssignments();
-    return () => (mounted = false);
-  }, []);
+      const hasFabric = String(c.fabricType || "").trim().length > 0;
+      const hasItem = String(c.itemType || "").trim().length > 0;
+      if (!hasFabric && !hasItem) {
+        setLocalError(
+          `Row ${i + 1}: please provide fabric or item (at least one).`
+        );
+        return;
+      }
+      const num = Number(c.amount);
+      if (!c.amount || isNaN(num) || num <= 0) {
+        setLocalError(`Row ${i + 1}: enter a valid amount (> 0).`);
+        return;
+      }
+      const available = amountAvailableMap[String(c.clothAmountId)] || 0;
+      if (num > available) {
+        setLocalError(
+          `Row ${
+            i + 1
+          }: requested amount (${num}) exceeds available (${available}).`
+        );
+        return;
+      }
+    }
 
+    for (const [id, totalReq] of Object.entries(requestedPerClothAmount)) {
+      const available = amountAvailableMap[id] || 0;
+      if (totalReq > available) {
+        setLocalError(
+          `Total requested for selected cloth (${id}) is ${totalReq} which exceeds its available ${available}.`
+        );
+        return;
+      }
+    }
+  }, [
+    formData.tailorId,
+    formData.consumptions,
+    amountAvailableMap,
+    requestedPerClothAmount,
+  ]);
+
+  /* ---------- form helpers ---------- */
+  const handleAddRow = () =>
+    setFormData((s) => ({
+      ...s,
+      consumptions: [...s.consumptions, emptyConsumption()],
+    }));
+  const handleRemoveRow = (idx) =>
+    setFormData((s) => ({
+      ...s,
+      consumptions: s.consumptions.filter((_, i) => i !== idx),
+    }));
+  const handleRowChange = (idx, key, value) =>
+    setFormData((s) => {
+      const consumptions = s.consumptions.map((r, i) =>
+        i === idx ? { ...r, [key]: value } : r
+      );
+      return { ...s, consumptions };
+    });
+
+  const onRowClothAmountSelect = (idx, clothAmountId) => {
+    const found =
+      clothAmounts.find((c) => String(c._id) === String(clothAmountId)) || {};
+    const fabric = found.fabricType ?? found.fabric ?? found.fabric_type ?? "";
+    const item = found.itemType ?? found.item ?? found.item_type ?? "";
+    const unit = found.unitType ?? found.unit ?? "meters";
+
+    setFormData((prev) => {
+      const consumptions = prev.consumptions.slice();
+      consumptions[idx] = {
+        ...consumptions[idx],
+        clothAmountId,
+        fabricType: consumptions[idx].fabricType
+          ? consumptions[idx].fabricType
+          : fabric,
+        itemType: consumptions[idx].itemType
+          ? consumptions[idx].itemType
+          : item,
+        unitType: consumptions[idx].unitType
+          ? consumptions[idx].unitType
+          : unit,
+      };
+      return { ...prev, consumptions };
+    });
+  };
+
+  const pretty = (v) =>
+    v || v === 0 ? String(v).charAt(0).toUpperCase() + String(v).slice(1) : "";
+  const clothTitle = (c) => {
+    if (!c) return "Unknown";
+    const fabric = c.fabricType ?? c.fabric ?? c.fabric_type ?? "";
+    const item = c.itemType ?? c.item ?? c.item_type ?? "";
+    const available = getAmountAvailable(c);
+    const unit = c.unitType ?? c.unit ?? "";
+    const titlePart =
+      [pretty(fabric), pretty(item)].filter(Boolean).join(" / ") ||
+      (c._id ?? "Unknown");
+    return `${titlePart} — ${available} ${unit || ""}`;
+  };
+
+  /* ---------- submission (batch) ---------- */
+  const submitAssignments = async (payload) => {
+    // Correct endpoint: POST /tailors/assign-cloth-roll
+    return await apiClient.post("/tailors/assign-cloth-roll", payload);
+  };
+
+  const handleSubmitInline = async (e) => {
+    e.preventDefault();
+    if (localError) {
+      toast.error(localError);
+      return;
+    }
+    if (!formData.tailorId) {
+      toast.error("Please select a tailor.");
+      return;
+    }
+    setSubmitting(true);
+    const payload = {
+      tailorId: formData.tailorId,
+      assignedDate: formData.assignedDate,
+      clothConsumptions: formData.consumptions.map((c) => {
+        const row = {
+          clothAmountId: c.clothAmountId,
+          unitType: c.unitType,
+          amount: Number(c.amount),
+        };
+        if (String(c.fabricType || "").trim())
+          row.fabricType = c.fabricType.trim();
+        if (String(c.itemType || "").trim()) row.itemType = c.itemType.trim();
+        return row;
+      }),
+    };
+
+    try {
+      const res = await submitAssignments(payload);
+
+      if (res?.data) {
+        const data = res.data;
+
+        // prefer masterTotals if returned
+        if (Array.isArray(data.masterTotals) && data.masterTotals.length) {
+          setServerMasterTotals(data.masterTotals);
+          const arr = data.masterTotals.map((mt) => ({
+            _id: mt.clothAmountId ?? mt._id,
+            fabricType: mt.fabricType ?? mt.clothDoc?.fabricType ?? "",
+            itemType: mt.itemType ?? mt.clothDoc?.itemType ?? "",
+            remainingMeters:
+              typeof mt.available === "number"
+                ? mt.available
+                : mt.clothDoc?.amount ?? 0,
+            unitType: mt.unit ?? mt.clothDoc?.unit ?? "m",
+            serialNumber: mt.clothDoc?.serialNumber,
+            raw: mt,
+          }));
+          setClothRolls(arr);
+        } else if (Array.isArray(data.updatedClothAmounts) && data.updatedClothAmounts.length) {
+          // fallback to updatedClothAmounts
+          const arr = data.updatedClothAmounts.map((r) => ({
+            _id: r._id,
+            fabricType: r.fabricType ?? r.fabric ?? r.fabric_type ?? "",
+            itemType: r.itemType ?? r.item ?? r.item_type ?? "",
+            remainingMeters: typeof r.amount === "number" ? r.amount : 0,
+            unitType: r.unit ?? r.unitType ?? "m",
+            serialNumber: r.serialNumber ?? r.rollNo,
+            raw: r,
+          }));
+          // merge into existing clothRolls, replacing matching ids
+          setClothRolls((prev) => {
+            const map = {};
+            prev.forEach((p) => (map[String(p._id)] = p));
+            arr.forEach((u) => (map[String(u._id)] = u));
+            return Object.values(map);
+          });
+        }
+
+        setSuccessData({
+          message: data.message || "Assignments created",
+          payload: data,
+        });
+        toast.success(data.message || "Assignments created");
+
+        // reset form
+        setFormData({
+          tailorId: "",
+          assignedDate: new Date().toISOString().split("T")[0],
+          consumptions: [emptyConsumption()],
+        });
+      } else {
+        toast.success("Assignments created");
+        setFormData({
+          tailorId: "",
+          assignedDate: new Date().toISOString().split("T")[0],
+          consumptions: [emptyConsumption()],
+        });
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error(
+        err?.response?.data?.message ||
+          err?.message ||
+          "Failed to create assignments"
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  /* ---------- filtered / available display ---------- */
   const filteredRolls = useMemo(() => {
     const q = (searchQuery || "").trim().toLowerCase();
-    return clothRolls.filter((roll) => {
+    return (clothRolls || []).filter((roll) => {
       if (!q) return true;
       const fabric = String(
         roll.fabricType || roll.itemType || ""
@@ -468,126 +701,7 @@ export default function AssignRollsPage() {
     [filteredRolls]
   );
 
-  const selectedRoll =
-    clothRolls.find((r) => String(r._id) === String(watch("rollId"))) || null;
-  const selectedTailor =
-    tailors.find((t) => String(t._id) === String(watch("tailorId"))) || null;
-  const selectedProduct =
-    products.find((p) => (p._id || p.id || p.name) === watch("productId")) ||
-    null;
-
-  useEffect(() => {
-    if (!selectedProduct) return;
-    setValue(
-      "itemType",
-      selectedProduct.itemType ??
-        selectedProduct.category ??
-        selectedProduct.name ??
-        ""
-    );
-    setValue(
-      "fabricType",
-      selectedProduct.fabricType ?? selectedProduct.materialType ?? ""
-    );
-  }, [selectedProduct, setValue]);
-
-  useEffect(() => setServerMasterTotals([]), [watch("tailorId")]);
-
-  const onSubmit = (form) => {
-    if (!form.rollId || !form.tailorId)
-      return toast.error("Please select both a roll and a tailor.");
-    const assignMeters = Number(form.assignMeters ?? 0);
-    if (!assignMeters || assignMeters <= 0)
-      return toast.error("Assigned meters must be a positive number.");
-
-    const opt = serverMasterTotals.find(
-      (m) => String(m.clothAmountId ?? m._id) === String(form.rollId)
-    );
-    if (opt) {
-      const remaining =
-        (typeof opt.available === "number"
-          ? opt.available
-          : opt.clothDoc?.amount ?? 0) -
-        (typeof opt.totalAssigned === "number"
-          ? opt.totalAssigned
-          : opt.assigned ?? 0);
-      if (assignMeters > Math.max(0, remaining))
-        return toast.error(
-          `Assigned meters exceed master remaining (${remaining})`
-        );
-    }
-
-    if (selectedRoll && assignMeters > (selectedRoll.remainingMeters ?? 0))
-      return toast.error("Assigned meters exceed roll remaining meters.");
-
-    setConfirmOpen(true);
-  };
-
-  const [confirmOpen, setConfirmOpen] = useState(false);
-
-  const confirmAssign = async () => {
-    const formValues = {
-      rollId: watch("rollId"),
-      tailorId: watch("tailorId"),
-      assignMeters: Number(watch("assignMeters") ?? 0),
-      productId: watch("productId") || null,
-      itemType: watch("itemType") || "",
-      fabricType: watch("fabricType") || "",
-      quantity: Number(watch("quantity") || 1),
-    };
-
-    setConfirmOpen(false);
-    setSubmitting(true);
-    try {
-      const res = await apiClient.patch("/tailors/cloth-amount-minus", {
-        assignedMeters: formValues.assignMeters,
-        tailorId: formValues.tailorId,
-        productId: formValues.productId,
-        itemType: formValues.itemType,
-        fabricType: formValues.fabricType,
-        quantity: formValues.quantity,
-        clothAmountId: formValues.rollId,
-      });
-
-      const updatedRoll = res?.data?.roll;
-      if (updatedRoll) {
-        setClothRolls((prev) => {
-          return prev
-            .map((r) =>
-              r._id === updatedRoll._id
-                ? {
-                    ...r,
-                    ...updatedRoll,
-                    remainingMeters: Number(
-                      updatedRoll.remainingMeters ?? updatedRoll.amount ?? 0
-                    ),
-                  }
-                : r
-            )
-            .filter((r) => (r.remainingMeters ?? 0) > 0);
-        });
-      }
-
-      if (res?.data?.assignment)
-        setAssignments((prev) => [res.data.assignment, ...prev]);
-      if (Array.isArray(res?.data?.masterTotals))
-        setServerMasterTotals(res.data.masterTotals);
-
-      setSuccessData({
-        message: res?.data?.message || "Assigned successfully",
-        roll: updatedRoll,
-        tailor: tailors.find((t) => t._id === formValues.tailorId),
-      });
-      toast.success(res?.data?.message || "Assigned successfully");
-      reset();
-    } catch (err) {
-      console.error(err);
-      toast.error(err?.response?.data?.message || "Failed to assign roll");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
+  /* ---------- render ---------- */
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -600,268 +714,251 @@ export default function AssignRollsPage() {
           Roll Assignment & Material Planning
         </h1>
 
-        <MaterialCalculator products={products} clothRolls={clothRolls} />
+        <MaterialCalculator products={[]} clothRolls={clothRolls} />
 
         <div className="bg-white p-6 rounded-xl shadow-md">
           <h2 className="text-xl font-semibold text-gray-700 flex items-center mb-4">
             <UserCheck className="mr-2 text-indigo-600" /> Assign Roll to Tailor
+            (Aggregate)
           </h2>
-
-          <div className="flex items-center gap-3 mb-4">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-3 text-gray-400" />
-              <input
-                type="search"
-                placeholder="Search rolls by fabric or Item..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-10 pr-3 py-2 w-full border rounded-md"
-                aria-label="Search cloth rolls"
-              />
-            </div>
-
-            <div className="text-sm text-gray-600">
-              {loadingRolls
-                ? "Loading rolls..."
-                : `${
-                    (serverMasterTotals.length && serverMasterTotals.length) ||
-                    availableRolls.length
-                  } available`}
-            </div>
-          </div>
-
-          <form onSubmit={handleSubmit(onSubmit)} className="space-y-4">
+          <form onSubmit={handleSubmitInline} className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700">
-                  Select Cloth Roll
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  <User className="inline w-4 h-4 mr-1" /> Select Tailor
                 </label>
                 <select
-                  {...register("rollId", { required: true })}
-                  className="mt-1 block w-full p-2 border-gray-300 rounded-md shadow-sm"
-                  disabled={loadingRolls}
-                  aria-label="Select cloth roll"
-                >
-                  <option value="">
-                    {loadingRolls ? "Loading..." : "-- Choose a roll --"}
-                  </option>
-                  {serverMasterTotals.length ? (
-                    serverMasterTotals.map((mt) => {
-                      const fabric =
-                        mt.fabricType ?? mt.clothDoc?.fabricType ?? "";
-                      const item = mt.itemType ?? mt.clothDoc?.itemType ?? "";
-                      const labelLeft =
-                        fabric && item
-                          ? `${item} / ${fabric}`
-                          : fabric || item || "Unnamed roll";
-                      const assigned = mt.totalAssigned ?? mt.assigned ?? 0;
-                      const unit = mt.unit ?? mt.clothDoc?.unit ?? "m";
-                      return (
-                        <option
-                          key={mt.clothAmountId ?? mt._id}
-                          value={mt.clothAmountId ?? mt._id}
-                        >
-                          {`${labelLeft} — assigned: ${assigned} ${unit}`}
-                        </option>
-                      );
-                    })
-                  ) : availableRolls.length ? (
-                    availableRolls.map((r) => {
-                      const fabric = (r.fabricType || "").trim();
-                      const item = (r.itemType || "").trim();
-                      const left =
-                        item && fabric
-                          ? `${item} / ${fabric}`
-                          : item || fabric || "Unnamed roll";
-                      return (
-                        <option key={r._id} value={r._id}>
-                          {`${left} - ${r.remainingMeters ?? r.amount} ${
-                            r.unitType ?? "m"
-                          } ${r.serialNumber ? `(S: ${r.serialNumber})` : ""}`}
-                        </option>
-                      );
-                    })
-                  ) : (
-                    <option disabled>No rolls available</option>
-                  )}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700">
-                  Assign to Tailor
-                </label>
-                <select
-                  {...register("tailorId", { required: true })}
+                  required
+                  value={formData.tailorId}
+                  onChange={(e) =>
+                    setFormData({ ...formData, tailorId: e.target.value })
+                  }
                   className="mt-1 block w-full p-2 border-gray-300 rounded-md shadow-sm"
                   disabled={loadingTailors}
-                  aria-label="Select tailor"
                 >
                   <option value="">
                     {loadingTailors
                       ? "Loading tailors..."
                       : "-- Choose a tailor --"}
                   </option>
-                  {/* Use filtered tailors (only role === 'Tailor') */}
-                  {tailorsFiltered.map((t) => (
-                    <option key={t._id} value={t._id}>
-                      {capitalize(t.username || t.name || "Unnamed")}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700">
-                  Product (optional)
-                </label>
-                <select
-                  {...register("productId")}
-                  className="mt-1 block w-full p-2 border-gray-300 rounded-md shadow-sm"
-                >
-                  <option value="">-- Choose product (optional) --</option>
-                  {products.map((p) => (
-                    <option key={p._id} value={p._id}>
-                      {p.name}
-                    </option>
-                  ))}
+                  {(tailors || [])
+                    // keep the Tailor-only filter but if role missing, still show
+                    .filter((t) =>
+                      typeof t.role === "string"
+                        ? t.role.trim().toLowerCase() === "tailor"
+                        : true
+                    )
+                    .map((t) => (
+                      <option key={t._id} value={t._id}>
+                        {capitalize(t.username || t.name || "Unnamed")}{" "}
+                        {t.skillLevel ? `(${t.skillLevel})` : ""}
+                      </option>
+                    ))}
                 </select>
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700">
-                  Item Type
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Assignment Date
                 </label>
                 <input
-                  {...register("itemType")}
-                  placeholder="e.g. Bomber Jacket"
-                  className="mt-1 block w-full p-2 border-gray-300 rounded-md shadow-sm"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700">
-                  Fabric Type
-                </label>
-                <input
-                  {...register("fabricType")}
-                  placeholder="e.g. Cotton"
+                  type="date"
+                  required
+                  value={formData.assignedDate}
+                  onChange={(e) =>
+                    setFormData({ ...formData, assignedDate: e.target.value })
+                  }
                   className="mt-1 block w-full p-2 border-gray-300 rounded-md shadow-sm"
                 />
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700">
-                  Assign Meters
-                </label>
-                <input
-                  type="number"
-                  step="0.01"
-                  {...register("assignMeters")}
-                  placeholder="Meters to assign"
-                  className="mt-1 block w-full p-2 border-gray-300 rounded-md shadow-sm"
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  Make sure assigned meters ≤ selected roll remaining meters.
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700">
-                  Quantity (for product)
-                </label>
-                <input
-                  {...register("quantity")}
-                  name="quantity"
-                  type="number"
-                  defaultValue={1}
-                  min={1}
-                  className="mt-1 block w-full p-2 border-gray-300 rounded-md shadow-sm"
-                />
-              </div>
-
-              <div className="flex items-end justify-end">
+            {/* Consumptions (rows) */}
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-medium text-gray-900">
+                  Consumptions (select aggregate item)
+                </h3>
                 <button
-                  type="submit"
-                  disabled={submitting || loadingRolls || loadingTailors}
-                  className={`inline-flex items-center px-4 py-2 ${
-                    submitting
-                      ? "bg-gray-400 cursor-not-allowed"
-                      : "bg-indigo-600 hover:bg-indigo-700"
-                  } text-white font-medium rounded-md`}
+                  type="button"
+                  onClick={handleAddRow}
+                  className="inline-flex items-center gap-1 text-sm text-indigo-600"
                 >
-                  {submitting ? "Assigning..." : "Assign Roll"}
+                  <Plus className="w-4 h-4" /> Add row
                 </button>
               </div>
+
+              {formData.consumptions.map((row, idx) => (
+                <div key={idx} className="border p-3 rounded-md bg-gray-50">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-sm font-medium">Row {idx + 1}</div>
+                    {formData.consumptions.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveRow(idx)}
+                        className="text-red-500 inline-flex items-center gap-1"
+                      >
+                        <Minus className="w-4 h-4" /> Remove
+                      </button>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-2">
+                    <select
+                      required
+                      value={row.clothAmountId}
+                      onChange={(e) =>
+                        onRowClothAmountSelect(idx, e.target.value)
+                      }
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                    >
+                      <option value="">
+                        Select cloth (aggregate item) for this row...
+                      </option>
+                      {clothAmounts.map((ca) => {
+                        const avail = getAmountAvailable(ca);
+                        if (avail <= 0) return null;
+                        return (
+                          <option key={ca._id} value={ca._id}>
+                            {clothTitle(ca)}
+                          </option>
+                        );
+                      })}
+                    </select>
+
+                    <input
+                      type="text"
+                      value={row.fabricType}
+                      onChange={(e) =>
+                        handleRowChange(idx, "fabricType", e.target.value)
+                      }
+                      placeholder="Fabric Type (optional if Item provided)"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                    />
+                    <input
+                      type="text"
+                      value={row.itemType}
+                      onChange={(e) =>
+                        handleRowChange(idx, "itemType", e.target.value)
+                      }
+                      placeholder="Item Type (optional if Fabric provided)"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                    />
+
+                    <div className="flex gap-2 items-center">
+                      <select
+                        value={row.unitType}
+                        onChange={(e) =>
+                          handleRowChange(idx, "unitType", e.target.value)
+                        }
+                        className="flex-1 px-3 py-2 border border-gray-300 rounded-lg"
+                      >
+                        <option value="meters">Meters</option>
+                        <option value="kilos">Kilos</option>
+                        <option value="unit">Units</option>
+                      </select>
+
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        required
+                        value={row.amount}
+                        onChange={(e) =>
+                          handleRowChange(idx, "amount", e.target.value)
+                        }
+                        placeholder="Amount"
+                        className="w-36 px-3 py-2 border border-gray-300 rounded-lg"
+                      />
+                    </div>
+
+                    {row.clothAmountId && (
+                      <div className="text-xs text-gray-600 mt-1">
+                        Available:{" "}
+                        <strong>
+                          {amountAvailableMap[row.clothAmountId] ?? 0}{" "}
+                          {clothAmounts.find(
+                            (c) => String(c._id) === String(row.clothAmountId)
+                          )?.unitType ?? ""}
+                        </strong>{" "}
+                        — Requested for this item:{" "}
+                        <strong>
+                          {requestedPerClothAmount[String(row.clothAmountId)] ??
+                            0}
+                        </strong>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* Items summary */}
+            <div className="bg-gray-50 p-4 rounded-lg">
+              <h4 className="font-medium text-gray-900 mb-2">Items Summary</h4>
+              <div className="text-sm text-gray-600 space-y-1">
+                {Object.keys(requestedPerClothAmount).length === 0 && (
+                  <p>No items selected yet.</p>
+                )}
+                {Object.entries(requestedPerClothAmount).map(([id, req]) => {
+                  const c = clothAmounts.find(
+                    (x) => String(x._id) === String(id)
+                  );
+                  const avail = amountAvailableMap[id] ?? 0;
+                  const rem = Math.max(0, avail - req);
+                  const fabric =
+                    c?.fabricType ?? c?.fabric ?? c?.fabric_type ?? "";
+                  const item = c?.itemType ?? c?.item ?? c?.item_type ?? "";
+                  const titleParts = [fabric, item]
+                    .map((s) => (s ? pretty(s) : null))
+                    .filter(Boolean);
+                  const title =
+                    titleParts.length > 0
+                      ? titleParts.join(" / ")
+                      : c?.name ?? "Unknown";
+                  const unit = c?.unitType ?? c?.unit ?? "";
+                  return (
+                    <p key={id}>
+                      <strong>{title}:</strong> Available {avail} {unit} —
+                      Requested {req} — Remaining {rem} {unit}
+                    </p>
+                  );
+                })}
+              </div>
+            </div>
+
+            {localError && <p className="text-sm text-red-600">{localError}</p>}
+
+            <div className="flex justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  // reset inline form
+                  setFormData({
+                    tailorId: "",
+                    assignedDate: new Date().toISOString().split("T")[0],
+                    consumptions: [emptyConsumption()],
+                  });
+                  setLocalError("");
+                }}
+                className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200"
+                disabled={submitting}
+              >
+                Reset
+              </button>
+
+              <button
+                type="submit"
+                disabled={submitting || !!localError || !formData.tailorId}
+                className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+              >
+                {submitting ? "Assigning..." : "Assign Items"}
+              </button>
             </div>
           </form>
         </div>
 
-        {/* Confirmation Modal */}
-        {confirmOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40">
-            <motion.div
-              initial={{ scale: 0.85, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              transition={{ duration: 0.18 }}
-              className="bg-white p-6 rounded-xl shadow-lg max-w-md w-full"
-              role="dialog"
-              aria-modal="true"
-            >
-              <h3 className="text-lg font-bold mb-2">Confirm Assignment</h3>
-              <p className="text-sm text-gray-700 mb-4">
-                You're about to assign:
-              </p>
-              <div className="mb-3 text-sm text-gray-800">
-                <div>
-                  <strong>Roll:</strong>{" "}
-                  {selectedRoll
-                    ? `${selectedRoll.fabricType || selectedRoll.itemType} - ${
-                        selectedRoll.remainingMeters ??
-                        selectedRoll.rawMasterTotal?.available ??
-                        selectedRoll.amount ??
-                        0
-                      } ${selectedRoll.unitType ?? "m"}`
-                    : "—"}
-                </div>
-                <div>
-                  <strong>Tailor:</strong>{" "}
-                  {selectedTailor
-                    ? capitalize(selectedTailor.username) || selectedTailor.name
-                    : "—"}
-                </div>
-                <div>
-                  <strong>Assign Meters:</strong> {watchedAssignMeters}
-                </div>
-                <div>
-                  <strong>Product:</strong>{" "}
-                  {selectedProduct ? selectedProduct.name : "—"}
-                </div>
-              </div>
-
-              <div className="flex justify-end gap-2">
-                <button
-                  onClick={() => setConfirmOpen(false)}
-                  className="px-4 py-2 rounded-md border"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={confirmAssign}
-                  className="px-4 py-2 bg-indigo-600 text-white rounded-md"
-                >
-                  Confirm & Assign
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-
-        {/* Success Modal */}
+        {/* Success Modal (simple inline result) */}
         {successData && (
           <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-40 z-50">
             <motion.div
@@ -872,19 +969,11 @@ export default function AssignRollsPage() {
             >
               <CheckCircle2 className="mx-auto text-green-600 w-12 h-12 mb-3" />
               <h3 className="text-xl font-bold text-gray-800 mb-2">
-                {successData.message}
+                {successData.message || "Success"}
               </h3>
-              <p className="text-gray-600 mb-1">
-                <strong>Roll:</strong>{" "}
-                {successData.roll?.fabricType ?? successData.roll?.itemType} -{" "}
-                {successData.roll?.remainingMeters ?? successData.roll?.amount}{" "}
-                {successData.roll?.unitType}
-              </p>
-              <p className="text-gray-600 mb-4">
-                <strong>Tailor:</strong>{" "}
-                {capitalize(successData.tailor?.username) ||
-                  successData.tailor?.name}
-              </p>
+              <pre className="text-xs text-left max-h-48 overflow-auto bg-gray-50 p-2 rounded">
+                {JSON.stringify(successData.payload ?? successData, null, 2)}
+              </pre>
               <button
                 onClick={() => setSuccessData(null)}
                 className="mt-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"

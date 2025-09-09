@@ -64,7 +64,7 @@ router.put('/:orderId/assign/:tailorId', AdminRoute, assignOrderToTailor);
 
 // getting assigned order
 router.get('/assigned',AdminRoute,getAssignedOrders)
-router.get('/assinged-all-tailor', AdminRoute, getTailorsWhoConfirmedOrdersSimple)
+router.get('/assigned-all-tailor', AdminRoute, getTailorsWhoConfirmedOrdersSimple)
 
 //getting unassigned order
 router.get('/unassigned',AdminRoute,getUnassignedOrders)
