@@ -33,7 +33,7 @@ const corsOptions = {
     'https://uae-project-u3an.onrender.com',
     'https://uae-admin-zeta.vercel.app',
     'https://uae-project-qwho.vercel.app/login',
-    'https://uae-project-tailor.onrender.com/login'
+    'https://uae-project-tailor.onrender.com'
   ],
   methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE'],
   credentials: true,
