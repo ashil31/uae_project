@@ -138,7 +138,7 @@ const getClothRolls = async (req, res) => {
       const fabric = norm(t._id?.fabricType);
       const item = norm(t._id?.itemType);
       const unit = norm(t._id?.unitType) || "";
-      const key = `${fabric}||${item}||${unit}`;
+      const key = `${fabric}${item}`;
       clothAmountTotalsMap[key] = {
         totalClothAmount: Number(t.totalClothAmount || 0),
         clothAmountId: (Array.isArray(t.sampleIds) && t.sampleIds.length > 0) ? String(t.sampleIds[0]) : null
@@ -187,7 +187,7 @@ const getClothRolls = async (req, res) => {
       const fabric = norm(t._id?.fabricType);
       const item = norm(t._id?.itemType);
       const unit = norm(t._id?.unitType) || "";
-      const key = `${fabric}||${item}||${unit}`;
+      const key = `${fabric}${item}`;
       assignmentByFiMap[key] = Number(t.totalAssignedToTailors || 0);
     });
 
@@ -217,7 +217,7 @@ const getClothRolls = async (req, res) => {
       const fabric = norm(entry.clothAmount?.fabricType ?? sample.fabricType ?? "");
       const item = norm(entry.clothAmount?.itemType ?? sample.itemType ?? "");
       const unit = norm(entry.clothAmount?.unitType ?? sample.unitType ?? "");
-      const key = `${fabric}||${item}||${unit}`;
+      const key = `${fabric}${item}`;
       if (!breakdownMap[key]) {
         breakdownMap[key] = { fabric, item, unit, clothAmountId: null, totalClothAmount: null, totalAssignedRolls: 0, totalAssignedToTailors: 0, available: null };
       }
@@ -249,7 +249,7 @@ const getClothRolls = async (req, res) => {
 
       // available = totalClothAmount - totalAssignedToTailors when totalClothAmount exists
       if (typeof val.totalClothAmount === "number") {
-        val.available = Math.max(0, Number(val.totalClothAmount || 0) - Number(val.totalAssignedToTailors || 0));
+        val.available = Math.max(0, Number(val.totalClothAmount || 0) );
       } else {
         // fallback: no clothAmount doc -> set available to 0 (can't infer stock)
         val.available = 0;
