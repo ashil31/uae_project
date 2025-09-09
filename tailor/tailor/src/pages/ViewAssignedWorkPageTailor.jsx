@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import apiClient from "../api/apiClient";
 
-const BASE_API = "http://localhost:4000/api";
+const BASE_API = "https://uae-project-1.onrender.com/api";
 
 const ENDPOINTS = {
   fetchAssigned: `${BASE_API}/tailors/my-work`,
