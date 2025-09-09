@@ -50,35 +50,69 @@ export const getMasterAssignments = async (req, res) => {
     }));
 
     // Compute masterTotals: aggregate sums per clothAmountId
+    // Compute masterTotals: aggregate sums per clothAmountId but also capture consumption-level fields
     const agg = await RollAssignment.aggregate([
       { $unwind: "$clothConsumptions" },
       {
         $group: {
           _id: "$clothConsumptions.clothAmountId",
           totalAssigned: { $sum: "$clothConsumptions.amount" },
+          // take the first non-null values from the consumption rows (if available)
+          fabricTypeFromConsumption: { $first: "$clothConsumptions.fabricType" },
+          itemTypeFromConsumption: { $first: "$clothConsumptions.itemType" },
+          unitTypeFromConsumption: { $first: "$clothConsumptions.unitType" },
+        },
+      },
+      // (optional) remove groups where _id is null if any stray rows exist
+      { $match: { _id: { $ne: null } } },
+      // lookup the ClothAmount doc for availability and canonical fields
+      {
+        $lookup: {
+          from: "clothamounts",              // collection name - ensure this matches your actual collection name
+          localField: "_id",
+          foreignField: "_id",
+          as: "clothDocs",
+        },
+      },
+      { $unwind: { path: "$clothDocs", preserveNullAndEmptyArrays: true } },
+      // project the shape we want
+      {
+        $project: {
+          _id: 1,
+          totalAssigned: 1,
+          fabricTypeFromConsumption: 1,
+          itemTypeFromConsumption: 1,
+          unitTypeFromConsumption: 1,
+          clothDoc: "$clothDocs",
         },
       },
     ]);
 
-    const ids = agg.map((a) => a._id).filter(Boolean);
-    const clothDocs = ids.length ? await ClothAmount.find({ _id: { $in: ids } }).lean() : [];
+    console.log("Aggregation result:", agg);
 
-    const clothMap = {};
-    clothDocs.forEach((c) => (clothMap[String(c._id)] = c));
-
+    // Map to masterTotals using consumption fields first, falling back to clothDoc fields
     const masterTotals = agg.map((a) => {
       const id = String(a._id);
-      const doc = clothMap[id] || null;
+      const doc = a.clothDoc ?? null;
+      // prefer consumption-level fields when present; fallback to clothDoc fields
+      const fabricType = a.fabricTypeFromConsumption ?? doc?.fabricType ?? doc?.fabric ?? doc?.fabric_type ?? null;
+      const itemType = a.itemTypeFromConsumption ?? doc?.itemType ?? doc?.item ?? doc?.item_type ?? null;
+      const unit = a.unitTypeFromConsumption ?? doc?.unit ?? doc?.unitType ?? null;
+      const available = doc && typeof doc.amount === "number" ? doc.amount : null;
+
       return {
         clothAmountId: id,
         totalAssigned: Number(a.totalAssigned || 0),
-        available: doc ? (typeof doc.amount === "number" ? doc.amount : null) : null,
-        fabricType: doc?.fabricType ?? doc?.fabric ?? doc?.fabric_type ?? null,
-        itemType: doc?.itemType ?? doc?.item ?? doc?.item_type ?? null,
-        unit: doc?.unit ?? doc?.unitType ?? null,
-        clothDoc: doc ?? null,
+        available,
+        fabricType,
+        itemType,
+        unit,
+        clothDoc: doc,
       };
     });
+
+
+    console.log(masterTotals);
 
     return res.json({
       success: true,

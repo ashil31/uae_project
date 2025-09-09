@@ -74,7 +74,7 @@ const computeMasterTotals = async (tailorId) => {
 };
 
 const assignClothRoll = async (req, res) => {
-  const session = await mongoose.startSession();
+  const session = await mongoose.connection.startSession();
   try {
     const { tailorId, assignedDate, clothConsumptions } = req.body;
 
@@ -120,19 +120,66 @@ const assignClothRoll = async (req, res) => {
     let createdAssignment = null;
 
     // --- Build assignmentTotals (per clothAmountId) ---
+    // ---------- robust fetch + diagnostics for clothDocsForTotals ----------
+    // ---------- robust fetch + diagnostics for clothDocsForTotals (FIXED) ----------
+    const normalizeAndCastIds = (ids = []) => {
+      return ids
+        .map((id) => (typeof id === 'string' ? id.trim() : id))
+        .filter(Boolean)
+        .map((id) => {
+          try { return mongoose.Types.ObjectId(String(id)); }
+          catch (e) { return null; }
+        })
+        .filter(Boolean);
+    };
+
     let clothDocsForTotals = [];
     try {
-      clothDocsForTotals = uniqIds.length
-        ? await ClothAmount.find({ _id: { $in: uniqIds } }).lean()
-        : [];
+      console.log('DEBUG assignClothRoll: mongoose connection name:', mongoose.connection && mongoose.connection.name);
+      console.log('DEBUG assignClothRoll: ClothAmount model db name:',
+        ClothAmount && ClothAmount.db && ClothAmount.db.name ? ClothAmount.db.name : '(unknown)');
+      console.log('DEBUG uniqIds raw:', uniqIds);
+
+      const objectIds = normalizeAndCastIds(uniqIds);
+      console.log('DEBUG uniqIds -> objectIds:', objectIds.map(String));
+
+      // Try to fetch using the session (if present). Use .lean()
+      try {
+        clothDocsForTotals = objectIds.length
+          ? await ClothAmount.find({ _id: { $in: objectIds } }).session(session).lean()
+          : [];
+        console.log('DEBUG found with session count:', clothDocsForTotals.length, clothDocsForTotals.map(d => String(d._id)));
+      } catch (sessErr) {
+        console.error('DEBUG find with session failed:', sessErr && sessErr.stack ? sessErr.stack : sessErr);
+        clothDocsForTotals = [];
+      }
+
+      // If nothing found with session, try without session to detect session/connection mismatch
+      if ((!clothDocsForTotals || clothDocsForTotals.length === 0) && objectIds.length) {
+        try {
+          const withoutSession = await ClothAmount.find({ _id: { $in: objectIds } }).lean();
+          console.log('DEBUG found WITHOUT session count:', withoutSession.length, withoutSession.map(d => String(d._id)));
+          if (withoutSession && withoutSession.length) clothDocsForTotals = withoutSession;
+        } catch (noSessErr) {
+          console.error('DEBUG find without session failed:', noSessErr && noSessErr.stack ? noSessErr.stack : noSessErr);
+        }
+      }
+
+      // --- BUILD MAP used later (this was missing) ---
+      var clothMapForTotals = {};
+      if (Array.isArray(clothDocsForTotals)) {
+        clothDocsForTotals.forEach((d) => {
+          clothMapForTotals[String(d._id)] = d;
+        });
+      }
+      console.log('DEBUG clothMapForTotals keys:', Object.keys(clothMapForTotals));
     } catch (e) {
-      console.error('Failed to fetch cloth docs for totals:', e && e.stack ? e.stack : e);
+      console.error('DEBUG Failed to fetch cloth docs for totals (outer):', e && e.stack ? e.stack : e);
       clothDocsForTotals = [];
+      var clothMapForTotals = {};
     }
-    const clothMapForTotals = {};
-    clothDocsForTotals.forEach((d) => {
-      clothMapForTotals[String(d._id)] = d;
-    });
+    // -------------------------------------------------------------------
+
 
     const assignmentTotals = uniqIds.map((id) => {
       const doc = clothMapForTotals[id] || {};
@@ -185,206 +232,225 @@ const assignClothRoll = async (req, res) => {
     try {
       await session.startTransaction();
 
-      const clothAmounts = await ClothAmount.find({ _id: { $in: uniqIds } }).session(session);
+      // normalize & cast uniqIds to ObjectId (trim strings too)
+      const objectIds = (uniqIds || [])
+        .map(id => (typeof id === 'string' ? id.trim() : id))
+        .filter(Boolean)
+        .map(id => {
+          try { return mongoose.Types.ObjectId(String(id)); }
+          catch (e) { return null; }
+        })
+        .filter(Boolean);
+
+      console.log('DEBUG transactional - objectIds:', objectIds.map(String));
+
+      // fetch using session and casted ids
+      const clothAmounts = objectIds.length
+        ? await ClothAmount.find({ _id: { $in: objectIds } }).session(session)
+        : [];
+
+      console.log('DEBUG transactional - found clothAmounts ids:', clothAmounts.map(c => String(c._id)));
 
       // ensure all exist
-      if (clothAmounts.length !== uniqIds.length) {
+      if (clothAmounts.length !== objectIds.length) {
         const foundIds = clothAmounts.map((c) => String(c._id));
-        const missing = uniqIds.filter((id) => !foundIds.includes(id));
+        const missing = objectIds.map(String).filter((id) => !foundIds.includes(id));
         await session.abortTransaction();
+        console.error('DEBUG transactional - missing ids:', missing);
         return res.status(404).json({ message: `ClothAmount(s) not found: ${missing.join(', ')}` });
       }
+    
 
       // validate availability
       for (const ca of clothAmounts) {
-        const id = String(ca._id);
-        const reqTotal = totals[id] || 0;
-        const avail = typeof ca.amount === 'number' ? ca.amount : 0;
-        if (reqTotal > avail) {
-          await session.abortTransaction();
-          return res
-            .status(400)
-            .json({ message: `Requested total ${reqTotal} exceeds available ${avail} for ClothAmount ${id}` });
-        }
-      }
-
-      // deduct
-      const touchedIds = [];
-      for (const ca of clothAmounts) {
-        const id = String(ca._id);
-        const deduct = totals[id] || 0;
-        if (deduct > 0) {
-          ca.amount = (typeof ca.amount === 'number' ? ca.amount : 0) - deduct;
-          if (ca.amount < 0) ca.amount = 0; // safety
-          await ca.save({ session });
-          touchedIds.push(id);
-        }
-      }
-
-      // create assignment in session — preserve optional parent fields if provided
-      const assignmentData = {
-        tailorId,
-        assignedDate: assignedDate ? new Date(assignedDate) : new Date(),
-        clothConsumptions: clothConsumptions.map((c) => ({
-          clothAmountId: c.clothAmountId,
-          fabricType: c.fabricType ? String(c.fabricType).trim() : undefined,
-          itemType: c.itemType ? String(c.itemType).trim() : undefined,
-          unitType: String(c.unitType).trim(),
-          amount: Number(c.amount),
-          approvedAmount: Number(c.amount),
-          ...(typeof c.waste !== 'undefined' ? { waste: Number(c.waste) } : {}),
-          parentAssignmentId: c.parentAssignmentId ? c.parentAssignmentId : undefined,
-          parentConsumptionId: c.parentConsumptionId ? c.parentConsumptionId : undefined,
-        })),
-        status: 'approved',
-        requestedBy: req.user?._id || null,
-        approvedBy: req.user?._id || null,
-        approvedAt: new Date(),
-      };
-
-      const createdArr = await RollAssignment.create([assignmentData], { session });
-      createdAssignment = createdArr[0];
-
-      await session.commitTransaction();
-
-      // After commit, fetch populated assignment and updated cloth amounts
-      const populated = await populateAssignment(createdAssignment._id);
-      const updatedClothAmounts = touchedIds.length
-        ? await ClothAmount.find({ _id: { $in: touchedIds } }).lean()
-        : [];
-
-      // compute master totals (cumulative) for the tailor — defensive call
-      const masterTotals = await computeMasterTotals(tailorId).catch((e) => {
-        console.error('computeMasterTotals (post-transaction) failed:', e && e.stack ? e.stack : e);
-        return [];
-      });
-
-      return res.status(201).json({
-        message: 'Assignment created and amounts deducted (transactional)',
-        assignment: populated,
-        updatedClothAmounts,
-        // detailed per-id totals (keep/remove as you like)
-        assignmentTotals,
-        // ✅ consolidated totals per fabric+item+unit (what admin wants)
-        assignmentGroupedTotals,
-        masterTotals,
-      });
-    } catch (txErr) {
-      console.error('Transaction attempt failed — falling back:', txErr && txErr.stack ? txErr.stack : txErr);
-      try {
+      const id = String(ca._id);
+      const reqTotal = totals[id] || 0;
+      const avail = typeof ca.amount === 'number' ? ca.amount : 0;
+      if (reqTotal > avail) {
         await session.abortTransaction();
-      } catch (abortErr) {
-        console.error('abortTransaction failed:', abortErr && abortErr.stack ? abortErr.stack : abortErr);
+        return res
+          .status(400)
+          .json({ message: `Requested total ${reqTotal} exceeds available ${avail} for ClothAmount ${id}` });
       }
-      // fallthrough to fallback non-transactional flow below
     }
 
-    // Fallback non-transactional atomic updates
-    const applied = [];
+    // deduct
+    const touchedIds = [];
+    for (const ca of clothAmounts) {
+      const id = String(ca._id);
+      const deduct = totals[id] || 0;
+      if (deduct > 0) {
+        ca.amount = (typeof ca.amount === 'number' ? ca.amount : 0) - deduct;
+        if (ca.amount < 0) ca.amount = 0; // safety
+        await ca.save({ session });
+        touchedIds.push(id);
+      }
+    }
+
+    // create assignment in session — preserve optional parent fields if provided
+    const assignmentData = {
+      tailorId,
+      assignedDate: assignedDate ? new Date(assignedDate) : new Date(),
+      clothConsumptions: clothConsumptions.map((c) => ({
+        clothAmountId: c.clothAmountId,
+        fabricType: c.fabricType ? String(c.fabricType).trim() : undefined,
+        itemType: c.itemType ? String(c.itemType).trim() : undefined,
+        unitType: String(c.unitType).trim(),
+        amount: Number(c.amount),
+        approvedAmount: Number(c.amount),
+        ...(typeof c.waste !== 'undefined' ? { waste: Number(c.waste) } : {}),
+        parentAssignmentId: c.parentAssignmentId ? c.parentAssignmentId : undefined,
+        parentConsumptionId: c.parentConsumptionId ? c.parentConsumptionId : undefined,
+      })),
+      status: 'approved',
+      requestedBy: req.user?._id || null,
+      approvedBy: req.user?._id || null,
+      approvedAt: new Date(),
+    };
+
+    const createdArr = await RollAssignment.create([assignmentData], { session });
+    createdAssignment = createdArr[0];
+
+    await session.commitTransaction();
+
+    // After commit, fetch populated assignment and updated cloth amounts
+    const populated = await populateAssignment(createdAssignment._id);
+    const updatedClothAmounts = touchedIds.length
+      ? await ClothAmount.find({ _id: { $in: touchedIds } }).lean()
+      : [];
+
+    // compute master totals (cumulative) for the tailor — defensive call
+    const masterTotals = await computeMasterTotals(tailorId).catch((e) => {
+      console.error('computeMasterTotals (post-transaction) failed:', e && e.stack ? e.stack : e);
+      return [];
+    });
+
+    return res.status(201).json({
+      message: 'Assignment created and amounts deducted (transactional)',
+      assignment: populated,
+      updatedClothAmounts,
+      // detailed per-id totals (keep/remove as you like)
+      assignmentTotals,
+      // ✅ consolidated totals per fabric+item+unit (what admin wants)
+      assignmentGroupedTotals,
+      masterTotals,
+    });
+  } catch (txErr) {
+    console.error('Transaction attempt failed — falling back:', txErr && txErr.stack ? txErr.stack : txErr);
     try {
-      for (const id of uniqIds) {
-        const deduct = totals[id] || 0;
-        if (deduct <= 0) continue;
-
-        const updated = await ClothAmount.findOneAndUpdate(
-          { _id: id, amount: { $gte: deduct } },
-          { $inc: { amount: -deduct } },
-          { new: true }
-        ).lean();
-
-        if (!updated) {
-          // rollback prior applied
-          for (const a of applied) {
-            try {
-              await ClothAmount.findByIdAndUpdate(a.id, { $inc: { amount: a.deducted } });
-            } catch (rbErr) {
-              console.error('Rollback update failed for', a, rbErr && rbErr.stack ? rbErr.stack : rbErr);
-            }
-          }
-          return res.status(400).json({
-            message: `Insufficient amount for ClothAmount ${id}. Operation aborted, previous updates rolled back.`,
-          });
-        }
-        applied.push({ id, deducted: deduct });
-      }
-
-      const assignmentData = {
-        tailorId,
-        assignedDate: assignedDate ? new Date(assignedDate) : new Date(),
-        clothConsumptions: clothConsumptions.map((c) => ({
-          clothAmountId: c.clothAmountId,
-          fabricType: c.fabricType ? String(c.fabricType).trim() : undefined,
-          itemType: c.itemType ? String(c.itemType).trim() : undefined,
-          unitType: String(c.unitType).trim(),
-          amount: Number(c.amount),
-          approvedAmount: Number(c.amount),
-          ...(typeof c.waste !== 'undefined' ? { waste: Number(c.waste) } : {}),
-          parentAssignmentId: c.parentAssignmentId ? c.parentAssignmentId : undefined,
-          parentConsumptionId: c.parentConsumptionId ? c.parentConsumptionId : undefined,
-        })),
-        status: 'approved',
-        requestedBy: req.user?._id || null,
-        approvedBy: req.user?._id || null,
-        approvedAt: new Date(),
-      };
-
-      const created = await RollAssignment.create(assignmentData);
-      const populated = await populateAssignment(created._id);
-      const updatedClothAmounts2 = applied.length
-        ? await ClothAmount.find({ _id: { $in: applied.map((a) => a.id) } }).lean()
-        : [];
-
-      // compute master totals (cumulative) for the tailor — defensive call
-      const masterTotals = await computeMasterTotals(tailorId).catch((e) => {
-        console.error('computeMasterTotals (fallback) failed:', e && e.stack ? e.stack : e);
-        return [];
-      });
-
-      return res.status(201).json({
-        message: 'Assignment created and amounts deducted (non-transactional fallback)',
-        assignment: populated,
-        updatedClothAmounts: updatedClothAmounts2,
-        assignmentTotals,
-        assignmentGroupedTotals,
-        masterTotals,
-      });
-    } catch (fallbackErr) {
-      console.error('Fallback flow failed:', fallbackErr && fallbackErr.stack ? fallbackErr.stack : fallbackErr);
-      // rollback any partial applied changes
-      try {
-        if (Array.isArray(applied) && applied.length) {
-          for (const a of applied) {
-            await ClothAmount.findByIdAndUpdate(a.id, { $inc: { amount: a.deducted } });
-          }
-        }
-      } catch (rollbackErr) {
-        console.error(
-          'Rollback after fallback failure failed:',
-          rollbackErr && rollbackErr.stack ? rollbackErr.stack : rollbackErr
-        );
-      }
-      const isDev = process.env.NODE_ENV !== 'production';
-      return res.status(500).json({
-        message: 'Failed during non-transactional assignment flow',
-        error: isDev
-          ? (fallbackErr && fallbackErr.stack ? fallbackErr.stack : String(fallbackErr))
-          : 'Internal server error',
-      });
+      await session.abortTransaction();
+    } catch (abortErr) {
+      console.error('abortTransaction failed:', abortErr && abortErr.stack ? abortErr.stack : abortErr);
     }
-  } catch (err) {
-    console.error('assignClothRoll error (outer):', err && err.stack ? err.stack : err);
+    // fallthrough to fallback non-transactional flow below
+  }
+
+  // Fallback non-transactional atomic updates
+  const applied = [];
+  try {
+    for (const id of uniqIds) {
+      const deduct = totals[id] || 0;
+      if (deduct <= 0) continue;
+
+      const updated = await ClothAmount.findOneAndUpdate(
+        { _id: id, amount: { $gte: deduct } },
+        { $inc: { amount: -deduct } },
+        { new: true }
+      ).lean();
+
+      if (!updated) {
+        // rollback prior applied
+        for (const a of applied) {
+          try {
+            await ClothAmount.findByIdAndUpdate(a.id, { $inc: { amount: a.deducted } });
+          } catch (rbErr) {
+            console.error('Rollback update failed for', a, rbErr && rbErr.stack ? rbErr.stack : rbErr);
+          }
+        }
+        return res.status(400).json({
+          message: `Insufficient amount for ClothAmount ${id}. Operation aborted, previous updates rolled back.`,
+        });
+      }
+      applied.push({ id, deducted: deduct });
+    }
+
+    const assignmentData = {
+      tailorId,
+      assignedDate: assignedDate ? new Date(assignedDate) : new Date(),
+      clothConsumptions: clothConsumptions.map((c) => ({
+        clothAmountId: c.clothAmountId,
+        fabricType: c.fabricType ? String(c.fabricType).trim() : undefined,
+        itemType: c.itemType ? String(c.itemType).trim() : undefined,
+        unitType: String(c.unitType).trim(),
+        amount: Number(c.amount),
+        approvedAmount: Number(c.amount),
+        ...(typeof c.waste !== 'undefined' ? { waste: Number(c.waste) } : {}),
+        parentAssignmentId: c.parentAssignmentId ? c.parentAssignmentId : undefined,
+        parentConsumptionId: c.parentConsumptionId ? c.parentConsumptionId : undefined,
+      })),
+      status: 'approved',
+      requestedBy: req.user?._id || null,
+      approvedBy: req.user?._id || null,
+      approvedAt: new Date(),
+    };
+
+    const created = await RollAssignment.create(assignmentData);
+    const populated = await populateAssignment(created._id);
+    const updatedClothAmounts2 = applied.length
+      ? await ClothAmount.find({ _id: { $in: applied.map((a) => a.id) } }).lean()
+      : [];
+
+    // compute master totals (cumulative) for the tailor — defensive call
+    const masterTotals = await computeMasterTotals(tailorId).catch((e) => {
+      console.error('computeMasterTotals (fallback) failed:', e && e.stack ? e.stack : e);
+      return [];
+    });
+
+    return res.status(201).json({
+      message: 'Assignment created and amounts deducted (non-transactional fallback)',
+      assignment: populated,
+      updatedClothAmounts: updatedClothAmounts2,
+      assignmentTotals,
+      assignmentGroupedTotals,
+      masterTotals,
+    });
+  } catch (fallbackErr) {
+    console.error('Fallback flow failed:', fallbackErr && fallbackErr.stack ? fallbackErr.stack : fallbackErr);
+    // rollback any partial applied changes
+    try {
+      if (Array.isArray(applied) && applied.length) {
+        for (const a of applied) {
+          await ClothAmount.findByIdAndUpdate(a.id, { $inc: { amount: a.deducted } });
+        }
+      }
+    } catch (rollbackErr) {
+      console.error(
+        'Rollback after fallback failure failed:',
+        rollbackErr && rollbackErr.stack ? rollbackErr.stack : rollbackErr
+      );
+    }
     const isDev = process.env.NODE_ENV !== 'production';
     return res.status(500).json({
-      message: 'Internal server error',
-      error: isDev ? (err && err.stack ? err.stack : String(err)) : 'Internal server error',
+      message: 'Failed during non-transactional assignment flow',
+      error: isDev
+        ? (fallbackErr && fallbackErr.stack ? fallbackErr.stack : String(fallbackErr))
+        : 'Internal server error',
     });
-  } finally {
-    try {
-      await session.endSession();
-    } catch (e) {
-      console.error('endSession failed:', e && e.stack ? e.stack : e);
-    }
   }
+} catch (err) {
+  console.error('assignClothRoll error (outer):', err && err.stack ? err.stack : err);
+  const isDev = process.env.NODE_ENV !== 'production';
+  return res.status(500).json({
+    message: 'Internal server error',
+    error: isDev ? (err && err.stack ? err.stack : String(err)) : 'Internal server error',
+  });
+} finally {
+  try {
+    await session.endSession();
+  } catch (e) {
+    console.error('endSession failed:', e && e.stack ? e.stack : e);
+  }
+}
 };
 
 export default assignClothRoll;

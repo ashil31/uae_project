@@ -350,6 +350,7 @@ export default function AssignRollsPage() {
       try {
         setLoadingRolls(true);
         const res = await apiClient.get("/tailors/master/assignments");
+        console.log(res.data);        
         const payload = res?.data ?? {};
 
         if (Array.isArray(payload.masterTotals) && payload.masterTotals.length) {
