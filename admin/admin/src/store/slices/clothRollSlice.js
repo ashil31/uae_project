@@ -13,9 +13,8 @@ const getAuthHeaders = () => {
   };
 };
 
-/**
- * Helpers
- */
+/* ---------- helper functions kept as-is (normalizeArrayResponse, extractSingleRoll, wrapRawRollAsServerEntry) ---------- */
+/* copy your existing helper functions here (unchanged) */
 const normalizeArrayResponse = (resData) => {
   if (Array.isArray(resData)) return resData;
   if (resData == null) return [];
@@ -31,11 +30,6 @@ const extractSingleRoll = (payload) => {
   return typeof payload === 'object' && !Array.isArray(payload) ? payload : null;
 };
 
-/**
- * Convert a raw ClothRoll document (as returned by create/edit endpoints)
- * into the unified server entry shape that our UI expects:
- * { type: 'roll', rollId, sampleRolls: [...], totalAssigned, rollCount }
- */
 const wrapRawRollAsServerEntry = (raw) => {
   if (!raw || typeof raw !== 'object') return null;
   const rollId = raw._id ? String(raw._id) : null;
@@ -61,25 +55,26 @@ const wrapRawRollAsServerEntry = (raw) => {
   };
 };
 
-/**
- * Thunks
- */
 export const getClothRolls = createAsyncThunk(
   'clothRolls/getClothRolls',
   async (_, { rejectWithValue }) => {
     try {
       const response = await axios.get(`${serverUrl}/tailors/cloth-rolls`, getAuthHeaders());
-      // keep console for temporary debugging (optional)
       console.log('getClothRolls response.data:', response.data);
-      const arr = normalizeArrayResponse(response.data);
-      return arr;
+      const payload = response.data ?? {};
+      let list = [];
+      if (Array.isArray(payload.data)) list = payload.data;
+      else if (Array.isArray(payload)) list = payload;
+      else if (Array.isArray(payload.clothRolls)) list = payload.clothRolls;
+      const overall = payload.overall ?? {};
+      return { list, overall };
     } catch (err) {
-      // prefer server message if available
       const payload = err.response?.data ?? { message: err.message };
       return rejectWithValue(payload);
     }
   }
 );
+
 
 export const addClothRoll = createAsyncThunk(
   'clothRolls/addClothRoll',
@@ -120,11 +115,9 @@ export const deleteClothRoll = createAsyncThunk(
   }
 );
 
-/**
- * Slice
- */
+/* initialState and slice setup — keep your existing code (unchanged) */
 const initialState = {
-  clothRolls: [], // array of server entries (type: 'group' or 'roll')
+  clothRolls: [],
   overall: { totalAssigned: 0, totalClothAmount: 0, totalAvailable: 0 },
   loading: false,
   error: null,
@@ -148,7 +141,6 @@ const clothRollSlice = createSlice({
   },
   extraReducers: (builder) => {
     builder
-      // GET
       .addCase(getClothRolls.pending, (state) => {
         state.loading = true;
         state.error = null;
@@ -174,13 +166,11 @@ const clothRollSlice = createSlice({
       })
       .addCase(addClothRoll.fulfilled, (state, action) => {
         state.loading = false;
-        // payload might be raw new roll or wrapper
         const raw = extractSingleRoll(action.payload);
         let entry = null;
         if (raw) {
           entry = wrapRawRollAsServerEntry(raw);
         } else {
-          // if server returned an already-formed entry (type/group/roll), use it
           const maybeList = normalizeArrayResponse(action.payload);
           if (Array.isArray(maybeList) && maybeList.length > 0 && typeof maybeList[0] === 'object') {
             entry = maybeList[0];
@@ -189,7 +179,6 @@ const clothRollSlice = createSlice({
           }
         }
         if (entry) {
-          // add to top
           state.clothRolls.unshift(entry);
         }
         state.error = null;
@@ -209,21 +198,16 @@ const clothRollSlice = createSlice({
         const raw = extractSingleRoll(action.payload);
         let updatedEntry = null;
         if (raw) {
-          // server returned a raw ClothRoll doc -> wrap to server entry
           updatedEntry = wrapRawRollAsServerEntry(raw);
         } else if (action.payload && typeof action.payload === 'object') {
-          // maybe already server-entry
           updatedEntry = action.payload;
         }
 
         if (updatedEntry) {
-          // Try to find matching entry in state.clothRolls
           const matchIndex = state.clothRolls.findIndex((e) => {
-            // match by rollId for roll entries, or clothAmountId for group entries, or _id
             if (!e) return false;
             if (e.type === 'roll' && updatedEntry.type === 'roll') return String(e.rollId) === String(updatedEntry.rollId);
             if (e.type === 'group' && updatedEntry.type === 'group') return String(e.clothAmountId) === String(updatedEntry.clothAmountId);
-            // fallback: compare sampleRolls[0]._id or rollId or id fields
             const existingId = e.rollId || e.clothAmountId || e.id || e._id;
             const updatedId = updatedEntry.rollId || updatedEntry.clothAmountId || updatedEntry.id || updatedEntry._id;
             return existingId && updatedId && String(existingId) === String(updatedId);
@@ -232,7 +216,6 @@ const clothRollSlice = createSlice({
           if (matchIndex !== -1) {
             state.clothRolls[matchIndex] = updatedEntry;
           } else {
-            // if not found, add to top
             state.clothRolls.unshift(updatedEntry);
           }
         }
@@ -251,13 +234,10 @@ const clothRollSlice = createSlice({
       .addCase(deleteClothRoll.fulfilled, (state, action) => {
         state.loading = false;
         const id = action.payload;
-        // remove any entries that reference this id (roll entries or group entries referencing roll._id)
         state.clothRolls = state.clothRolls.filter((e) => {
           if (!e) return false;
           if (e.type === 'roll') return String(e.rollId) !== String(id);
-          // for group entries, sampleRolls may contain the roll
           if (Array.isArray(e.sampleRolls) && e.sampleRolls.some((r) => String(r._id) === String(id))) return false;
-          // fallback compare some id fields
           const existingId = e.rollId || e.clothAmountId || e.id || e._id;
           if (existingId && String(existingId) === String(id)) return false;
           return true;

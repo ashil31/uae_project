@@ -2,30 +2,26 @@
 import mongoose from "mongoose";
 import ClothRoll from "../../models/clothRoll.js";
 import ClothAmount from "../../models/clothAmount.js";
+import RollAssignment from "../../models/rollAssignment.js"; // <-- your model
+
+const norm = (v) => (v === undefined || v === null ? "" : String(v).toLowerCase().trim());
 
 /**
  * getClothRolls
+ * Response: { success: true, data: [...], overall: { breakdownByFabricItem: [...] } }
  *
- * Returns a unified list of:
- *  - grouped results for clothAmountId (type: "group")
- *  - single roll entries for rolls missing clothAmountId (type: "roll")
- *
- * Response: { success: true, data: [...], overall: { totalAssigned, totalClothAmount, totalAvailable, breakdownByUnit, breakdownByFabric, breakdownByFabricItem } }
+ * available is computed as totalClothAmount - totalAssignedToTailors
+ * using RollAssignment.clothConsumptions (preferred clothAmountId when present).
  */
 const getClothRolls = async (req, res) => {
   try {
     const matchStage = {};
-    // Scope to user if desired (set ENABLE_USER_SCOPE=true to enable)
     if (req.user && req.user._id && process.env.ENABLE_USER_SCOPE === "true") {
       matchStage.createdBy = mongoose.Types.ObjectId(req.user._id);
     }
 
-    // Debug sample to inspect raw documents
-    const sample = await ClothRoll.find(matchStage).limit(5).lean();
-    console.log("sample ClothRoll docs:", sample);
-
     //
-    // 1) grouped pipeline for documents that HAVE clothAmountId (non-null)
+    // 1) grouped pipeline for docs that HAVE clothAmountId (existing behaviour)
     //
     const groupedPipeline = [
       { $match: matchStage },
@@ -33,7 +29,7 @@ const getClothRolls = async (req, res) => {
       {
         $group: {
           _id: "$clothAmountId",
-          totalAssigned: {
+          totalAssignedRolls: {
             $sum: {
               $cond: [
                 { $ifNull: ["$amount", false] },
@@ -43,7 +39,17 @@ const getClothRolls = async (req, res) => {
             }
           },
           rollCount: { $sum: 1 },
-          sampleRolls: { $push: { _id: "$_id", rollNo: "$rollNo", amount: "$amount", fabricType: "$fabricType", itemType: "$itemType", unitType: "$unitType", status: "$status" } }
+          sampleRolls: {
+            $push: {
+              _id: "$_id",
+              rollNo: "$rollNo",
+              amount: "$amount",
+              fabricType: "$fabricType",
+              itemType: "$itemType",
+              unitType: "$unitType",
+              status: "$status"
+            }
+          }
         }
       },
       {
@@ -56,30 +62,17 @@ const getClothRolls = async (req, res) => {
       },
       { $unwind: { path: "$clothAmountDoc", preserveNullAndEmptyArrays: true } },
       {
-        $addFields: {
-          clothAmount: "$clothAmountDoc",
-          available: {
-            $cond: [
-              { $ifNull: ["$clothAmountDoc.amount", false] },
-              { $subtract: ["$clothAmountDoc.amount", "$totalAssigned"] },
-              null
-            ]
-          }
-        }
-      },
-      {
         $project: {
           _id: 0,
           clothAmountId: "$_id",
-          totalAssigned: 1,
+          totalAssignedRolls: 1,
           rollCount: 1,
-          available: 1,
           clothAmount: {
-            _id: "$clothAmount._id",
-            fabricType: "$clothAmount.fabricType",
-            itemType: "$clothAmount.itemType",
-            unitType: "$clothAmount.unitType",
-            amount: "$clothAmount.amount"
+            _id: "$clothAmountDoc._id",
+            fabricType: "$clothAmountDoc.fabricType",
+            itemType: "$clothAmountDoc.itemType",
+            unitType: "$clothAmountDoc.unitType",
+            amount: "$clothAmountDoc.amount"
           },
           sampleRolls: { $slice: ["$sampleRolls", 5] }
         }
@@ -88,15 +81,12 @@ const getClothRolls = async (req, res) => {
     ];
 
     const grouped = await ClothRoll.aggregate(groupedPipeline);
-
     const groupedFormatted = (grouped || []).map((g) => ({
       type: "group",
-      id: String(g.clothAmountId),
-      clothAmountId: g.clothAmountId,
+      clothAmountId: g.clothAmountId ? String(g.clothAmountId) : null,
       clothAmount: g.clothAmount || null,
-      totalAssigned: g.totalAssigned || 0,
-      rollCount: g.rollCount || 0,
-      available: (typeof g.available === "number" ? g.available : null),
+      totalAssignedRolls: Number(g.totalAssignedRolls || 0),
+      rollCount: Number(g.rollCount || 0),
       sampleRolls: g.sampleRolls || []
     }));
 
@@ -105,16 +95,13 @@ const getClothRolls = async (req, res) => {
     //
     const unknownMatch = { ...matchStage, $or: [{ clothAmountId: { $exists: false } }, { clothAmountId: null }] };
     const unknownRolls = await ClothRoll.find(unknownMatch).lean();
-
     const unknownFormatted = (unknownRolls || []).map((r) => ({
       type: "roll",
-      id: String(r._id),
       rollId: String(r._id),
       clothAmountId: null,
       clothAmount: null,
-      totalAssigned: r.amount != null ? Number(r.amount) : 1,
+      totalAssignedRolls: r.amount != null ? Number(r.amount) : 0,
       rollCount: 1,
-      available: null,
       sampleRolls: [{
         _id: String(r._id),
         rollNo: r.rollNo,
@@ -126,81 +113,186 @@ const getClothRolls = async (req, res) => {
       }]
     }));
 
-    // Merge grouped + unknown in a single array
+    // merged data
     const data = [...groupedFormatted, ...unknownFormatted];
 
-    // Compute overall totals AND breakdowns
-    const overall = data.reduce(
-      (acc, entry) => {
-        const assigned = Number(entry.totalAssigned || 0);
-        acc.totalAssigned += assigned;
-
-        if (entry.clothAmount && typeof entry.clothAmount.amount === "number") {
-          acc.totalClothAmount += Number(entry.clothAmount.amount);
-        }
-
-        if (typeof entry.available === "number") acc.totalAvailable += Number(entry.available);
-
-        // derive representative values
-        const samples = Array.isArray(entry.sampleRolls) && entry.sampleRolls.length ? entry.sampleRolls : [];
-        const unit = (entry.clothAmount && entry.clothAmount.unitType) || (samples[0] && samples[0].unitType) || "Unknown";
-        const fabric = (entry.clothAmount && entry.clothAmount.fabricType) || (samples[0] && samples[0].fabricType) || "Unknown";
-        const item = (entry.clothAmount && entry.clothAmount.itemType) || (samples[0] && samples[0].itemType) || "Unknown";
-
-        // breakdown by unit
-        acc.breakdownByUnit[unit] = (acc.breakdownByUnit[unit] || 0) + assigned;
-
-        // breakdown by fabric
-        acc.breakdownByFabric[fabric] = (acc.breakdownByFabric[fabric] || 0) + assigned;
-
-        // breakdown by fabric+item (server-side grouping for frontend)
-        const fiKey = `${fabric}||${item}`;
-        const existing = acc.breakdownByFabricItem[fiKey] || { fabric, item, totalAssigned: 0, available: null };
-        existing.totalAssigned += assigned;
-
-        // set/merge availability: prefer numeric available if present on entry
-        if (existing.available === null && typeof entry.available === "number") {
-          existing.available = entry.available;
-        }
-        acc.breakdownByFabricItem[fiKey] = existing;
-
-        return acc;
-      },
+    //
+    // 3) compute totals from ClothAmount collection grouped by fabric + item + unit
+    //
+    const clothAmountTotalsRaw = await ClothAmount.aggregate([
       {
-        totalAssigned: 0,
-        totalClothAmount: 0,
-        totalAvailable: 0,
-        breakdownByUnit: {},      // { meters: 123, kilos: 45, unit: 10 }
-        breakdownByFabric: {},    // { cotton: 100, silk: 20, Unknown: 5 }
-        breakdownByFabricItem: {} // { "cotton||shirt": { fabric, item, totalAssigned, available }, ... }
+        $group: {
+          _id: {
+            fabricType: "$fabricType",
+            itemType: "$itemType",
+            unitType: "$unitType"
+          },
+          totalClothAmount: { $sum: "$amount" },
+          sampleIds: { $push: "$_id" }
+        }
       }
-    );
+    ]);
 
-    // convert breakdownByFabricItem from keyed object to array for easier frontend consumption
-    const breakdownByFabricItemArray = Object.entries(overall.breakdownByFabricItem).map(([key, val]) => ({
-      key,
-      fabric: val.fabric,
-      item: val.item,
-      totalAssigned: val.totalAssigned,
-      available: val.available
-    }));
+    const clothAmountTotalsMap = {};
+    (clothAmountTotalsRaw || []).forEach((t) => {
+      const fabric = norm(t._id?.fabricType);
+      const item = norm(t._id?.itemType);
+      const unit = norm(t._id?.unitType) || "";
+      const key = `${fabric}||${item}||${unit}`;
+      clothAmountTotalsMap[key] = {
+        totalClothAmount: Number(t.totalClothAmount || 0),
+        clothAmountId: (Array.isArray(t.sampleIds) && t.sampleIds.length > 0) ? String(t.sampleIds[0]) : null
+      };
+    });
+
+    //
+    // 4) aggregate RollAssignment : two aggregations
+    //    A) by clothAmountId when present (preferred)
+    //    B) by fabric|item|unit when clothAmountId is not present
+    //
+    // A) by clothAmountId
+    const assignmentByClothAmountRaw = await RollAssignment.aggregate([
+      { $unwind: "$clothConsumptions" },
+      { $match: { "clothConsumptions.clothAmountId": { $ne: null } } },
+      {
+        $group: {
+          _id: "$clothConsumptions.clothAmountId",
+          totalAssignedToTailors: { $sum: { $ifNull: ["$clothConsumptions.amount", 0] } }
+        }
+      }
+    ]);
+    const assignmentByClothAmountMap = {};
+    (assignmentByClothAmountRaw || []).forEach((t) => {
+      const id = t._id ? String(t._id) : null;
+      if (id) assignmentByClothAmountMap[id] = Number(t.totalAssignedToTailors || 0);
+    });
+
+    // B) by fabric|item|unit for clothConsumptions without clothAmountId
+    const assignmentByFiRaw = await RollAssignment.aggregate([
+      { $unwind: "$clothConsumptions" },
+      { $match: { $or: [{ "clothConsumptions.clothAmountId": { $exists: false } }, { "clothConsumptions.clothAmountId": null }] } },
+      {
+        $group: {
+          _id: {
+            fabricType: "$clothConsumptions.fabricType",
+            itemType: "$clothConsumptions.itemType",
+            unitType: "$clothConsumptions.unitType"
+          },
+          totalAssignedToTailors: { $sum: { $ifNull: ["$clothConsumptions.amount", 0] } }
+        }
+      }
+    ]);
+    const assignmentByFiMap = {};
+    (assignmentByFiRaw || []).forEach((t) => {
+      const fabric = norm(t._id?.fabricType);
+      const item = norm(t._id?.itemType);
+      const unit = norm(t._id?.unitType) || "";
+      const key = `${fabric}||${item}||${unit}`;
+      assignmentByFiMap[key] = Number(t.totalAssignedToTailors || 0);
+    });
+
+    //
+    // 5) Build breakdown map and merge totals + assignments
+    //
+    const breakdownMap = {};
+
+    // initialize from clothAmountTotalsMap so totals are present even if no rolls exist
+    Object.entries(clothAmountTotalsMap).forEach(([key, v]) => {
+      const [fabricRaw, itemRaw, unitRaw] = key.split("||").map(s => s ?? "");
+      breakdownMap[key] = {
+        fabric: fabricRaw || "",
+        item: itemRaw || "",
+        unit: unitRaw || "",
+        clothAmountId: v.clothAmountId || null,
+        totalClothAmount: Number(v.totalClothAmount || 0),
+        totalAssignedRolls: 0,
+        totalAssignedToTailors: 0,
+        available: null
+      };
+    });
+
+    // add roll-based totals (grouped & unknown)
+    data.forEach((entry) => {
+      const sample = (entry.sampleRolls && entry.sampleRolls[0]) || {};
+      const fabric = norm(entry.clothAmount?.fabricType ?? sample.fabricType ?? "");
+      const item = norm(entry.clothAmount?.itemType ?? sample.itemType ?? "");
+      const unit = norm(entry.clothAmount?.unitType ?? sample.unitType ?? "");
+      const key = `${fabric}||${item}||${unit}`;
+      if (!breakdownMap[key]) {
+        breakdownMap[key] = { fabric, item, unit, clothAmountId: null, totalClothAmount: null, totalAssignedRolls: 0, totalAssignedToTailors: 0, available: null };
+      }
+      breakdownMap[key].totalAssignedRolls = (breakdownMap[key].totalAssignedRolls || 0) + Number(entry.totalAssignedRolls || 0);
+
+      if (entry.clothAmountId) breakdownMap[key].clothAmountId = breakdownMap[key].clothAmountId || String(entry.clothAmountId);
+    });
+
+    // merge assignment totals and compute available
+    Object.entries(breakdownMap).forEach(([key, val]) => {
+      // assigned to tailors: prefer mapping by clothAmountId
+      let assignedToTailors = 0;
+      if (val.clothAmountId && assignmentByClothAmountMap[String(val.clothAmountId)]) {
+        assignedToTailors = assignmentByClothAmountMap[String(val.clothAmountId)];
+      } else if (assignmentByFiMap[key]) {
+        assignedToTailors = assignmentByFiMap[key];
+      } else {
+        assignedToTailors = 0;
+      }
+      val.totalAssignedToTailors = Number(assignedToTailors || 0);
+
+      // ensure totalClothAmount exists where possible (came from clothAmountTotalsMap)
+      if (clothAmountTotalsMap[key]) {
+        val.totalClothAmount = clothAmountTotalsMap[key].totalClothAmount;
+      } else {
+        // no clothAmount doc found for this fabric/item/unit; leave null or fallback 0
+        val.totalClothAmount = val.totalClothAmount ?? null;
+      }
+
+      // available = totalClothAmount - totalAssignedToTailors when totalClothAmount exists
+      if (typeof val.totalClothAmount === "number") {
+        val.available = Math.max(0, Number(val.totalClothAmount || 0) - Number(val.totalAssignedToTailors || 0));
+      } else {
+        // fallback: no clothAmount doc -> set available to 0 (can't infer stock)
+        val.available = 0;
+      }
+    });
+
+    // convert to array for frontend
+    const breakdownByFabricItem = Object.entries(breakdownMap).map(([compositeKey, val]) => {
+      const [fabricRaw, itemRaw, unitRaw] = compositeKey.split("||").map(s => s ?? "");
+      return {
+        key: compositeKey,
+        clothAmountId: val.clothAmountId || null,
+        fabric: fabricRaw || "",
+        item: itemRaw || "",
+        unit: unitRaw || "",
+        totalAssignedRolls: Number(val.totalAssignedRolls || 0),
+        totalAssignedToTailors: Number(val.totalAssignedToTailors || 0),
+        totalClothAmount: typeof val.totalClothAmount === "number" ? val.totalClothAmount : null,
+        available: typeof val.available === "number" ? val.available : 0
+      };
+    });
+
+    // sort for stable display
+    breakdownByFabricItem.sort((a, b) => {
+      const fa = (a.fabric || "").localeCompare(b.fabric || "");
+      if (fa !== 0) return fa;
+      return (a.item || "").localeCompare(b.item || "");
+    });
 
     // Final response
     return res.status(200).json({
       success: true,
       data,
       overall: {
-        totalAssigned: Number(overall.totalAssigned),
-        totalClothAmount: Number(overall.totalClothAmount),
-        totalAvailable: Number(overall.totalAvailable),
-        breakdownByUnit: overall.breakdownByUnit,
-        breakdownByFabric: overall.breakdownByFabric,
-        breakdownByFabricItem: breakdownByFabricItemArray
+        totalAssigned: 0,
+        totalClothAmount: 0,
+        totalAvailable: 0,
+        breakdownByFabricItem
       }
     });
   } catch (err) {
     console.error("Error in getClothRolls:", err);
-    return res.status(500).json({ success: false, message: "Internal Server Error" });
+    return res.status(500).json({ success: false, message: "Internal Server Error", error: err.message });
   }
 };
 

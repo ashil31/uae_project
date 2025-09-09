@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+// src/components/cloths/ClothRollList.jsx
+import React, { useState, useEffect, useMemo } from 'react';
 import { useDispatch, useSelector } from 'react-redux';
 import { motion } from 'framer-motion';
-import { Plus, Edit2, Trash2, Search, Package, AlertCircle, X } from 'lucide-react';
-import axios from 'axios';
+import { Plus, Edit2, Trash2, Search, Package, AlertCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { getClothRolls, deleteClothRoll } from '../../../store/slices/clothRollSlice';
 
@@ -17,7 +17,10 @@ export const DeleteConfirmModal = ({ isOpen, onClose, title = 'Confirm', message
       <div className="bg-white dark:bg-slate-800 rounded-lg shadow p-6 w-full max-w-md">
         <div className="flex items-start justify-between">
           <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-50">{title}</h3>
-          <button onClick={onClose} className="text-gray-500 hover:text-gray-700"><X /></button>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-700">
+            <span className="sr-only">Close</span>
+            ✕
+          </button>
         </div>
         <p className="mt-3 text-sm text-gray-600 dark:text-gray-300">{message}</p>
         <div className="mt-6 flex justify-end space-x-3">
@@ -34,7 +37,7 @@ export const DeleteConfirmModal = ({ isOpen, onClose, title = 'Confirm', message
 /* --------------------- ClothRollList --------------------- */
 const ClothRollList = () => {
   const dispatch = useDispatch();
-  const { clothRolls = [], loading } = useSelector((state) => state.clothRolls || {});
+  const { clothRolls = [], overall = {}, loading } = useSelector((state) => state.clothRolls || {});
 
   const [searchTerm, setSearchTerm] = useState('');
   const [showModal, setShowModal] = useState(false);
@@ -71,15 +74,70 @@ const ClothRollList = () => {
   // defensive: ensure clothRolls is an array and remove falsy entries
   const clothRollsSafe = Array.isArray(clothRolls) ? clothRolls.filter(Boolean) : [];
 
-  const filteredRolls = clothRollsSafe.filter((roll) => {
-    if (!roll) return false;
+  /**
+   * displayRolls:
+   * - If server returned `type: 'roll'` entries (or raw roll objects), we use those.
+   * - If server returned `group` entries, we expand sampleRolls into rows (or you can choose 1-per-group).
+   * - This keeps UI consistent regardless of server grouping.
+   */
+  const displayRolls = useMemo(() => {
+    return clothRollsSafe.flatMap((entry) => {
+      if (!entry) return [];
 
-    const rollNo = typeof roll.rollNo === 'string' ? roll.rollNo : String(roll.rollNo ?? '');
-    const matchesSearch = rollNo.toLowerCase().includes(String(searchTerm ?? '').toLowerCase());
-    const matchesStatus = filterStatus === 'all' || String(roll.status ?? '').toLowerCase() === filterStatus;
+      // 1) sometimes entry can be a raw roll doc (has rollNo or _id and no 'type')
+      if ((entry.rollNo && (entry._id || entry.rollId)) || (!entry.type && entry._id)) {
+        // return as-is (ensure _id exists)
+        return [{ ...(entry), _id: entry._id || entry.rollId || entry.id }];
+      }
 
-    return matchesSearch && matchesStatus;
-  });
+      // 2) server 'roll' entry shape: sampleRolls exists (1 item)
+      if (entry.type === 'roll' && Array.isArray(entry.sampleRolls) && entry.sampleRolls.length > 0) {
+        return entry.sampleRolls.map((r) => ({ ...(r), _id: r._id || r.rollId || Math.random().toString(36).slice(2) }));
+      }
+
+      // 3) server 'group' entries -> expand sampleRolls (representative rows)
+      if (entry.type === 'group' && Array.isArray(entry.sampleRolls) && entry.sampleRolls.length > 0) {
+        // choose to show all sample rolls (you can change to sampleRolls[0] to show one per group)
+        return entry.sampleRolls.map((r) => ({
+          ...(r),
+          _id: r._id || Math.random().toString(36).slice(2),
+          // attach some group metadata if needed
+          parentGroupId: entry.clothAmountId || entry.id || null,
+          parentTotalAssigned: entry.totalAssigned ?? undefined,
+          parentAvailable: entry.available ?? undefined,
+        }));
+      }
+
+      // 4) fallback: fabricate a representative row from clothAmount
+      if (entry.clothAmount) {
+        const id = entry.clothAmountId || entry.id || Math.random().toString(36).slice(2);
+        return [{
+          _id: id,
+          rollNo: `GROUP-${String(id).slice(-6)}`,
+          amount: entry.totalAssigned ?? '-',
+          fabricType: entry.clothAmount.fabricType ?? '-',
+          itemType: entry.clothAmount.itemType ?? '-',
+          unitType: entry.clothAmount.unitType ?? '',
+          status: 'grouped',
+          createdAt: entry.clothAmount._id ? undefined : undefined
+        }];
+      }
+
+      return [];
+    });
+  }, [clothRollsSafe]);
+
+  // now apply search and status filter to displayRolls
+  const filteredRolls = useMemo(() => {
+    const term = String(searchTerm ?? '').toLowerCase().trim();
+    return displayRolls.filter((roll) => {
+      if (!roll) return false;
+      const rollNo = typeof roll.rollNo === 'string' ? roll.rollNo : String(roll.rollNo ?? '');
+      const matchesSearch = rollNo.toLowerCase().includes(term);
+      const matchesStatus = filterStatus === 'all' || String(roll.status ?? '').toLowerCase() === filterStatus;
+      return matchesSearch && matchesStatus;
+    });
+  }, [displayRolls, searchTerm, filterStatus]);
 
   const getStatusColor = (statusRaw) => {
     const status = String(statusRaw ?? '').toLowerCase();
@@ -90,23 +148,34 @@ const ClothRollList = () => {
         return 'bg-yellow-100 text-yellow-800';
       case 'used':
         return 'bg-gray-100 text-gray-800';
+      case 'grouped':
+        return 'bg-indigo-100 text-indigo-800';
       default:
         return 'bg-gray-100 text-gray-800';
     }
   };
 
-  const stats = {
-    total: clothRollsSafe.length,
-    available: clothRollsSafe.filter((r) => String(r?.status ?? '').toLowerCase() === 'available').length,
-    assigned: clothRollsSafe.filter((r) => String(r?.status ?? '').toLowerCase() === 'assigned').length,
-    used: clothRollsSafe.filter((r) => String(r?.status ?? '').toLowerCase() === 'used').length,
-  };
-
-  // Called by modal when a new roll saved
-  const handleNewRollSaved = (newRoll) => {
-    // prefer to re-fetch from server so aggregated totals and server-side defaults are accurate
-    dispatch(getClothRolls());
-  };
+  // Stats: prefer server overall if available, else compute from displayRolls
+  const stats = useMemo(() => {
+    if (overall && Object.keys(overall).length) {
+      return {
+        total: (displayRolls.length || 0),
+        available: displayRolls.filter((r) => String(r?.status ?? '').toLowerCase() === 'available').length,
+        assigned: displayRolls.filter((r) => String(r?.status ?? '').toLowerCase() === 'assigned').length,
+        used: displayRolls.filter((r) => String(r?.status ?? '').toLowerCase() === 'used').length,
+        // also expose server totals
+        serverTotalAssigned: overall.totalAssigned ?? null,
+        serverTotalClothAmount: overall.totalClothAmount ?? null,
+        serverTotalAvailable: overall.totalAvailable ?? null,
+      };
+    }
+    return {
+      total: displayRolls.length,
+      available: displayRolls.filter((r) => String(r?.status ?? '').toLowerCase() === 'available').length,
+      assigned: displayRolls.filter((r) => String(r?.status ?? '').toLowerCase() === 'assigned').length,
+      used: displayRolls.filter((r) => String(r?.status ?? '').toLowerCase() === 'used').length,
+    };
+  }, [overall, displayRolls]);
 
   return (
     <div className="space-y-6">
@@ -117,7 +186,10 @@ const ClothRollList = () => {
           <p className="text-sm text-gray-600">Manage your cloth roll stock</p>
         </div>
         <button
-          onClick={() => setShowModal(true)}
+          onClick={() => {
+            setEditingRoll(null);
+            setShowModal(true);
+          }}
           className="flex items-center space-x-2 bg-purple-600 text-white px-4 py-2 rounded-lg hover:bg-purple-700 transition-colors"
         >
           <Plus className="w-4 h-4" />
@@ -128,10 +200,10 @@ const ClothRollList = () => {
       {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         {[
-          { label: 'Total Rolls', value: stats.total, color: 'blue', icon: Package },
-          { label: 'Available', value: stats.available, color: 'green', icon: Package },
-          { label: 'Assigned', value: stats.assigned, color: 'yellow', icon: AlertCircle },
-          { label: 'Used', value: stats.used, color: 'gray', icon: Package },
+          { label: 'Total Rows', value: stats.total, bg: 'bg-blue-50', icon: Package },
+          { label: 'Available', value: stats.available, bg: 'bg-green-50', icon: Package },
+          { label: 'Assigned', value: stats.assigned, bg: 'bg-yellow-50', icon: AlertCircle },
+          { label: 'Used', value: stats.used, bg: 'bg-gray-50', icon: Package },
         ].map((stat, index) => (
           <div key={index} className="bg-white p-4 rounded-lg shadow border">
             <div className="flex items-center justify-between">
@@ -139,8 +211,8 @@ const ClothRollList = () => {
                 <p className="text-sm font-medium text-gray-600">{stat.label}</p>
                 <p className="text-2xl font-bold text-gray-900">{stat.value}</p>
               </div>
-              <div className={`p-2 rounded-full bg-${stat.color}-100`}>
-                <stat.icon className={`w-5 h-5 text-${stat.color}-600`} />
+              <div className={`${stat.bg} p-2 rounded-full`}>
+                <stat.icon className="w-5 h-5 text-gray-700" />
               </div>
             </div>
           </div>
@@ -168,6 +240,7 @@ const ClothRollList = () => {
           <option value="available">Available</option>
           <option value="assigned">Assigned</option>
           <option value="used">Used</option>
+          <option value="grouped">Grouped</option>
         </select>
       </div>
 
@@ -253,15 +326,19 @@ const ClothRollList = () => {
 
       {/* Modals */}
       <ClothRollFormModal
-  isOpen={showModal}
-  onClose={() => {
-    setShowModal(false);
-    setEditingRoll(null);
-  }}
-  roll={editingRoll} // corrected
-  onSaved={handleNewRollSaved}
-/>
-
+        isOpen={showModal}
+        onClose={() => {
+          setShowModal(false);
+          setEditingRoll(null);
+          // re-fetch after closing to reflect any server-side totals changes
+          dispatch(getClothRolls());
+        }}
+        roll={editingRoll}
+        onSaved={() => {
+          // re-fetch list when modal saved
+          dispatch(getClothRolls());
+        }}
+      />
 
       <DeleteConfirmModal
         isOpen={confirmModalOpen}
