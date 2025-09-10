@@ -1,4 +1,3 @@
-// src/components/assignments/RollAssignmentFormModal.jsx
 import React, { useState, useEffect, useMemo } from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { motion, AnimatePresence } from "framer-motion";
@@ -10,6 +9,7 @@ import toast from "react-hot-toast";
 
 const emptyConsumption = (overrides = {}) => ({
   clothKey: "", // clothAmountId or composite key
+  clothAmountId: null, // resolved concrete ClothAmount DB id if available
   fabricType: "",
   itemType: "",
   unitType: "meters",
@@ -26,6 +26,8 @@ const RollAssignmentFormModal = ({ isOpen, onClose }) => {
     tailorId: "",
     assignedDate: new Date().toISOString().split("T")[0],
     consumptions: [emptyConsumption()],
+    assignToMaster: true, // default to credit master pool when creating assignments (changeable by user)
+    masterTailorId: "", // NEW: selected master id
   });
   const [loading, setLoading] = useState(false);
   const [localError, setLocalError] = useState("");
@@ -35,7 +37,13 @@ const RollAssignmentFormModal = ({ isOpen, onClose }) => {
       dispatch(getTailors());
       dispatch(getClothRolls());
       setLocalError("");
-      setFormData({ tailorId: "", assignedDate: new Date().toISOString().split("T")[0], consumptions: [emptyConsumption()] });
+      setFormData({
+        tailorId: "",
+        assignedDate: new Date().toISOString().split("T")[0],
+        consumptions: [emptyConsumption()],
+        assignToMaster: true,
+        masterTailorId: "",
+      });
     }
   }, [isOpen, dispatch]);
 
@@ -44,22 +52,25 @@ const RollAssignmentFormModal = ({ isOpen, onClose }) => {
     const arr = overallFromStore?.breakdownByFabricItem;
     if (!Array.isArray(arr)) return [];
     return arr.map((it) => {
-      // it has: key (fabric||item||unit), clothAmountId, fabric, item, unit, totalAssigned, totalClothAmount, available
       const fabric = (it.fabric ?? "").trim();
       const item = (it.item ?? "").trim();
-      const key = it.clothAmountId ? String(it.clothAmountId) : String(it.key ?? "");
+      const key = it.masterClothAmountId ? String(it.masterClothAmountId) : (it.clothAmountId ? String(it.clothAmountId) : String(it.key ?? ""));
       const totalAssigned = Number(it.totalAssigned ?? 0);
       const totalClothAmount = typeof it.totalClothAmount === "number" ? it.totalClothAmount : null;
-      const available = typeof it.available === "number" ? it.available : (totalClothAmount !== null ? totalClothAmount - totalAssigned : null);
+      const available = (it.masterBalance !== undefined && it.masterBalance !== null)
+        ? Number(it.masterBalance)
+        : (typeof it.available === "number" ? Number(it.available) : (totalClothAmount !== null ? totalClothAmount - totalAssigned : null));
       return {
-        key, // clothAmountId or composite key
+        key,
         clothAmountId: it.clothAmountId || null,
+        masterClothAmountId: it.masterClothAmountId || null,
         fabric,
         item,
         unit: it.unit || "",
         totalAssigned,
         totalClothAmount,
-        available
+        available: available !== null ? available : null,
+        raw: it,
       };
     }).sort((a,b) => {
       const fa = (a.fabric || "").toLowerCase();
@@ -69,7 +80,7 @@ const RollAssignmentFormModal = ({ isOpen, onClose }) => {
     });
   }, [overallFromStore]);
 
-  // map for lookups
+  // quick map
   const serverAggregateMap = useMemo(() => {
     const m = {};
     serverAggregates.forEach((a) => { m[a.key] = a; });
@@ -86,6 +97,15 @@ const RollAssignmentFormModal = ({ isOpen, onClose }) => {
     });
     return map;
   }, [formData.consumptions]);
+
+  // compute masters list from tailors (users with role MasterTailor)
+  const masters = useMemo(() => {
+    if (!Array.isArray(tailors)) return [];
+    return tailors.filter(t => {
+      const role = (t.role || "").toString().toLowerCase();
+      return role === "mastertailor" || role === "master" || role === "mastertailor";
+    });
+  }, [tailors]);
 
   // validation
   useEffect(() => {
@@ -123,6 +143,13 @@ const RollAssignmentFormModal = ({ isOpen, onClose }) => {
           if (typeof avail === "number" && totalReq > avail) { computedError = `Total requested for ${key} is ${totalReq} which exceeds available ${avail}.`; break; }
         }
       }
+
+      // if assign to master, ensure a master selected
+      if (!computedError && formData.assignToMaster) {
+        if (!formData.masterTailorId || String(formData.masterTailorId).trim() === "") {
+          computedError = "Select a Master Tailor to credit the pool.";
+        }
+      }
     }
 
     setLocalError((prev) => (prev === computedError ? prev : computedError));
@@ -135,16 +162,19 @@ const RollAssignmentFormModal = ({ isOpen, onClose }) => {
     return { ...s, consumptions };
   });
 
+  // When aggregate selected, fill fabric/item/unit + resolved clothAmountId
   const onRowAggregateSelect = (idx, key) => {
     const agg = serverAggregateMap[key];
     const fabric = agg?.fabric ?? "";
     const item = agg?.item ?? "";
     const unit = agg?.unit ?? "meters";
+    const resolvedClothAmountId = agg?.clothAmountId || null;
     setFormData((prev) => {
       const consumptions = prev.consumptions.slice();
       consumptions[idx] = {
         ...consumptions[idx],
         clothKey: key,
+        clothAmountId: resolvedClothAmountId,
         fabricType: consumptions[idx].fabricType || fabric,
         itemType: consumptions[idx].itemType || item,
         unitType: consumptions[idx].unitType || unit
@@ -160,21 +190,31 @@ const RollAssignmentFormModal = ({ isOpen, onClose }) => {
     if (localError) { toast.error(localError); return; }
     setLoading(true);
 
-    // payload: send fabricType + itemType + amount (server will decide how to allocate)
-    const clothConsumptions = formData.consumptions.map((c) => ({
-      fabricType: (c.fabricType || "").trim(),
-      itemType: (c.itemType || "").trim(),
-      unitType: c.unitType,
-      amount: Number(c.amount)
-    }));
+    // payload: include clothAmountId when resolved and assignToMaster flag and masterTailorId
+    const clothConsumptions = formData.consumptions.map((c) => {
+      const base = {
+        fabricType: (c.fabricType || "").trim(),
+        itemType: (c.itemType || "").trim(),
+        unitType: c.unitType || "meters",
+        amount: Number(c.amount || 0),
+      };
+      if (c.clothAmountId) base.clothAmountId = c.clothAmountId;
+      return base;
+    });
 
-    const payload = { tailorId: formData.tailorId, assignedDate: formData.assignedDate, clothConsumptions };
+    const payload = {
+      tailorId: formData.tailorId,
+      assignedDate: formData.assignedDate,
+      clothConsumptions,
+      assignToMaster: !!formData.assignToMaster, // include explicit flag
+      masterTailorId: formData.assignToMaster ? (formData.masterTailorId || undefined) : undefined,
+    };
 
     try {
       await dispatch(assignClothRoll(payload)).unwrap();
       toast.success("Assignments created successfully");
       onClose();
-      setFormData({ tailorId: "", assignedDate: new Date().toISOString().split("T")[0], consumptions: [emptyConsumption()] });
+      setFormData({ tailorId: "", assignedDate: new Date().toISOString().split("T")[0], consumptions: [emptyConsumption()], assignToMaster: true, masterTailorId: "" });
       dispatch(getClothRolls());
     } catch (err) {
       toast.error(err?.message || err?.payload?.message || "Failed to create assignments");
@@ -200,9 +240,37 @@ const RollAssignmentFormModal = ({ isOpen, onClose }) => {
                   <label className="block text-sm font-medium text-gray-700 mb-2"><User className="inline w-4 h-4 mr-1" /> Select Tailor</label>
                   <select required value={formData.tailorId} onChange={(e) => setFormData({ ...formData, tailorId: e.target.value })} className="w-full px-3 py-2 border rounded-lg">
                     <option value="">Choose a tailor...</option>
-                    {(tailors || []).map(t => <option key={t._id} value={t._id}>{t.username ? (t.username.charAt(0).toUpperCase()+t.username.slice(1).toLowerCase()) : t.name} {t.skillLevel ? `(${t.skillLevel})` : ''}</option>)}
+                    {(tailors || []).map(t => <option key={t._id} value={t._id}>{t.username ? (t.username.charAt(0).toUpperCase()+t.username.slice(1).toLowerCase()) : `${t.firstName || ''} ${t.lastName || ''}`} {t.skillLevel ? `(${t.skillLevel})` : ''}</option>)}
                   </select>
                 </div>
+
+                <div className="flex items-center gap-4">
+                  <label className="inline-flex items-center gap-2">
+                    <input type="checkbox" checked={formData.assignToMaster} onChange={(e) => setFormData(s => ({ ...s, assignToMaster: e.target.checked }))} />
+                    <span className="text-sm text-gray-700">Credit Master Pool (assignToMaster)</span>
+                  </label>
+                </div>
+
+                {/* MASTER SELECT (visible when assignToMaster is checked) */}
+                {formData.assignToMaster && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">Master Tailor to credit</label>
+                    <select
+                      required={formData.assignToMaster}
+                      value={formData.masterTailorId}
+                      onChange={(e) => setFormData(s => ({ ...s, masterTailorId: e.target.value }))}
+                      className="w-full px-3 py-2 border rounded-lg"
+                    >
+                      <option value="">Choose master tailor...</option>
+                      {masters.map(m => (
+                        <option key={m._id} value={m._id}>
+                          {m.username ? (m.username.charAt(0).toUpperCase() + m.username.slice(1).toLowerCase()) : `${m.firstName || ''} ${m.lastName || ''}`}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-gray-500 mt-1">Select which master should receive the credited pool.</p>
+                  </div>
+                )}
 
                 <div className="space-y-3">
                   <div className="flex items-center justify-between">
@@ -221,8 +289,9 @@ const RollAssignmentFormModal = ({ isOpen, onClose }) => {
                         <select required value={row.clothKey} onChange={(e) => onRowAggregateSelect(idx, e.target.value)} className="w-full px-3 py-2 border rounded-lg">
                           <option value="">Select aggregated cloth (fabric / item)...</option>
                           {serverAggregates.map(opt => {
-                            const label = `${pretty(opt.fabric)}${opt.item ? `${pretty(opt.item)}` : ""}`;
-                            return <option key={opt.key} value={opt.key}>{`${label} — Available: ${typeof opt.available === "number" ? opt.available : 0}`}</option>;
+                            const label = `${pretty(opt.fabric)}${opt.item ? ` / ${pretty(opt.item)}` : ""}`;
+                            const availText = typeof opt.available === "number" ? opt.available : 0;
+                            return <option key={opt.key} value={opt.key}>{`${label} — Available: ${availText}`}</option>;
                           })}
                         </select>
 
@@ -262,7 +331,7 @@ const RollAssignmentFormModal = ({ isOpen, onClose }) => {
                         const requested = requestedPerAggregate[a.key] ?? 0;
                         const available = (typeof a.available === "number") ? a.available : (typeof a.totalClothAmount === "number" ? a.totalClothAmount - a.totalAssigned : 0);
                         const remaining = Math.max(0, available - requested);
-                        const label = `${pretty(a.fabric)}${a.item ? `${pretty(a.item)}` : ""}`;
+                        const label = `${pretty(a.fabric)}${a.item ? ` / ${pretty(a.item)}` : ""}`;
                         return (
                           <div key={a.key} className="flex items-center justify-between bg-white p-2 rounded border">
                             <div className="text-sm font-medium">{label}</div>

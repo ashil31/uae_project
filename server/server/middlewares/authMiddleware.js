@@ -4,33 +4,29 @@ import User from '../models/user.js';
 // Protect routes by verifying the JWT
 const protect = async (req, res, next) => {
     let token;
-
-    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-        try {
-            // Get token from header (e.g., "Bearer <token>")
+    try {
+        if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
             token = req.headers.authorization.split(' ')[1];
-
-            // Verify the token using your secret key
             const decoded = jwt.verify(token, process.env.SECRET_KEY);
 
-            // Get the user from the database using the ID in the token
-            // Attach the user to the request object, excluding the password
-            req.user = await User.findById(decoded.userId).select('-password');
-            
+            // Support different token claim names (userId, id, _id)
+            const uid = decoded?.userId ?? decoded?.id ?? decoded?._id ?? null;
+
+            if (!uid) return res.status(401).json({ message: 'Not authorized, token missing user id' });
+
+            req.user = await User.findById(uid).select('-password');
             if (!req.user) {
                 return res.status(401).json({ message: 'Not authorized, user not found' });
             }
 
-            next(); // Proceed to the next middleware or controller
-        } catch (error) {
-            console.error(error);
-            return res.status(401).json({ message: 'Not authorized, token failed' });
+            return next();
         }
+    } catch (error) {
+        console.error('protect: token verification error', error && (error.stack ?? error));
+        return res.status(401).json({ message: 'Not authorized, token failed' });
     }
 
-    if (!token) {
-        return res.status(401).json({ message: 'Not authorized, no token' });
-    }
+    return res.status(401).json({ message: 'Not authorized, no token' });
 };
 
 // Middleware to grant access only to 'Tailor' or 'MasterTailor' roles

@@ -1,23 +1,26 @@
+// controllers/cloths/addClothRoll.js
 import mongoose from "mongoose";
 import ClothAmount from "../../models/clothAmount.js";
 import ClothRoll from "../../models/clothRoll.js";
+import MasterClothAmount from "../../models/masterClothAmount.js";
 
 const normalize = (v) => (v === undefined || v === null ? undefined : String(v).trim().toLowerCase());
 const capitalizeFirst = (s) => (s ? s.charAt(0).toUpperCase() + s.slice(1) : s);
+const isValidObjectId = (id) => { if (!id) return false; try { return mongoose.Types.ObjectId.isValid(String(id)); } catch (e) { return false; } };
 
 /**
  * POST /api/cloths/add
- * Body: { rollNo?, amount, fabricType, unitType, itemType, createdBy? }
+ * Body: { rollNo?, amount, fabricType, unitType, itemType, createdBy?, creditMasterTailorId? }
  */
 const addClothRoll = async (req, res) => {
   const session = await mongoose.startSession();
   try {
-    let { rollNo, amount, fabricType, unitType, itemType, createdBy } = req.body;
+    let { rollNo, amount, fabricType, unitType, itemType, createdBy, creditMasterTailorId } = req.body;
 
     // normalize
-    fabricType = normalize(fabricType);
-    itemType = normalize(itemType);
-    unitType = normalize(unitType);
+    fabricType = normalize(fabricType) || "";
+    itemType = normalize(itemType) || "";
+    unitType = normalize(unitType) || "meters";
     rollNo = rollNo === undefined || rollNo === null ? undefined : String(rollNo).trim();
 
     // validate
@@ -25,7 +28,6 @@ const addClothRoll = async (req, res) => {
     if (amount === undefined || isNaN(amountNum) || amountNum <= 0) {
       return res.status(400).json({ message: "amount must be a positive number" });
     }
-
 
     // if rollNo provided, ensure uniqueness before creating audit
     if (rollNo) {
@@ -59,6 +61,13 @@ const addClothRoll = async (req, res) => {
           createdBy,
           clothAmountRef: clothAmountDoc._id
         }).save({ session });
+
+        // optionally credit master stock
+        if (creditMasterTailorId && isValidObjectId(creditMasterTailorId)) {
+          const masterFilter = { masterTailorId: creditMasterTailorId, fabricType, itemType, unitType };
+          const masterUpdate = { $inc: { amount: amountNum }, $setOnInsert: { masterTailorId: creditMasterTailorId, fabricType, itemType, unitType, clothAmountRef: clothAmountDoc._id } };
+          await MasterClothAmount.findOneAndUpdate(masterFilter, masterUpdate, { upsert: true, new: true, setDefaultsOnInsert: true, session });
+        }
 
         await session.commitTransaction();
         session.endSession();
@@ -96,6 +105,13 @@ const addClothRoll = async (req, res) => {
         clothAmountRef: clothAmountDoc._id
       }).save();
 
+      // credit master if requested (best-effort)
+      if (creditMasterTailorId && isValidObjectId(creditMasterTailorId)) {
+        const masterFilter = { masterTailorId: creditMasterTailorId, fabricType, itemType, unitType };
+        const masterUpdate = { $inc: { amount: amountNum }, $setOnInsert: { masterTailorId: creditMasterTailorId, fabricType, itemType, unitType, clothAmountRef: clothAmountDoc._id } };
+        await MasterClothAmount.findOneAndUpdate(masterFilter, masterUpdate, { upsert: true, new: true, setDefaultsOnInsert: true });
+      }
+
       const result = rollDoc.toObject();
       result.fabricType = capitalizeFirst(result.fabricType);
       result.itemType = capitalizeFirst(result.itemType);
@@ -120,3 +136,7 @@ const addClothRoll = async (req, res) => {
 };
 
 export default addClothRoll;
+
+
+
+

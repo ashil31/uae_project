@@ -4,6 +4,7 @@ import RollAssignment from '../../models/rollAssignment.js';
 import ClothAmount from '../../models/clothAmount.js';
 import ClothRoll from '../../models/clothRoll.js';
 import User from '../../models/user.js';
+import MasterClothAmount from '../../models/masterClothAmount.js';
 
 const isValidObjectId = (id) => {
   if (!id) return false;
@@ -15,46 +16,95 @@ const lowerTrim = (v) => {
   return String(v).toLowerCase().trim();
 };
 
+const normalizeForMaster = (v, fallback = 'unknown') => {
+  if (v === undefined || v === null) return fallback;
+  const s = String(v).trim().toLowerCase();
+  return s.length ? s : fallback;
+};
+
 const populateAssignment = async (id) =>
   RollAssignment.findById(id)
-    .populate('tailorId', 'username firstName lastName skillLevel')
+    .populate('tailorId', 'username firstName lastName skillLevel role')
     .populate('requestedBy', 'username')
     .populate('approvedBy', 'username')
     .populate('clothConsumptions.clothAmountId', 'fabricType itemType unit amount')
+    .populate('clothConsumptions.masterClothAmountId', 'masterTailorId fabricType itemType unitType amount clothAmountRef')
     .lean();
 
 const computeMasterTotals = async (tailorId) => {
   try {
     if (!isValidObjectId(tailorId)) return [];
     const objId = new mongoose.Types.ObjectId(String(tailorId));
+
     const agg = await RollAssignment.aggregate([
       { $match: { tailorId: objId } },
       { $unwind: '$clothConsumptions' },
       {
-        $group: {
-          _id: '$clothConsumptions.clothAmountId',
-          totalAssigned: { $sum: '$clothConsumptions.amount' },
-        },
+        $addFields: {
+          _fabric: { $toLower: { $ifNull: ['$clothConsumptions.fabricType', ''] } },
+          _item: { $toLower: { $ifNull: ['$clothConsumptions.itemType', ''] } },
+          _unit: { $toLower: { $ifNull: ['$clothConsumptions.unitType', 'meters'] } },
+          _approved: { $ifNull: ['$clothConsumptions.approvedAmount', '$clothConsumptions.amount', 0] },
+          _allocated: { $ifNull: ['$clothConsumptions.allocated', 0] },
+          _remaining: { $max: [{ $subtract: [{ $ifNull: ['$clothConsumptions.approvedAmount', '$clothConsumptions.amount', 0] }, { $ifNull: ['$clothConsumptions.allocated', 0] }] }, 0] },
+          _masterId: '$clothConsumptions.masterClothAmountId',
+          _clothAmountId: '$clothConsumptions.clothAmountId'
+        }
       },
+      {
+        $group: {
+          _id: { fabric: '$_fabric', item: '$_item', unit: '$_unit' },
+          fabricDisplay: { $first: '$clothConsumptions.fabricType' },
+          itemDisplay: { $first: '$clothConsumptions.itemType' },
+          unitDisplay: { $first: '$clothConsumptions.unitType' },
+          totalAssigned: { $sum: '$_approved' },
+          totalRemaining: { $sum: '$_remaining' },
+          clothAmountIds: { $addToSet: { $cond: [{ $ifNull: ['$_clothAmountId', false] }, '$_clothAmountId', null] } },
+          masterClothAmountIds: { $addToSet: { $cond: [{ $ifNull: ['$_masterId', false] }, '$_masterId', null] } },
+          rows: { $sum: 1 }
+        }
+      },
+      { $addFields: {
+          clothAmountIds: { $filter: { input: '$clothAmountIds', as: 'id', cond: { $ne: ['$$id', null] } } },
+          masterClothAmountIds: { $filter: { input: '$masterClothAmountIds', as: 'id', cond: { $ne: ['$$id', null] } } },
+          available: { $ifNull: ['$totalRemaining', 0] }
+        }
+      },
+      { $project: { _id: 0, key: '$_id', fabricType: '$fabricDisplay', itemType: '$itemDisplay', unit: '$unitDisplay', totalAssigned: 1, rows: 1, clothAmountIds: 1, masterClothAmountIds: 1, available: 1 } },
+      { $sort: { totalAssigned: -1 } }
     ]);
-    if (!agg || !agg.length) return [];
-    const ids = agg.map((a) => a._id).filter(Boolean);
-    const clothDocs = ids.length ? await ClothAmount.find({ _id: { $in: ids } }).lean() : [];
-    const clothMap = {};
-    clothDocs.forEach((c) => { clothMap[String(c._id)] = c; });
-    return agg.map((a) => {
-      const id = String(a._id);
-      const doc = clothMap[id] || null;
-      return {
-        clothAmountId: id,
-        totalAssigned: a.totalAssigned || 0,
-        available: doc ? (typeof doc.amount === 'number' ? doc.amount : 0) : null,
-        fabricType: doc?.fabricType ?? null,
-        itemType: doc?.itemType ?? null,
-        unit: doc?.unit ?? null,
-        clothDoc: doc ?? null,
-      };
-    });
+
+    const results = [];
+    for (const g of agg) {
+      let masterPool = null;
+      if (Array.isArray(g.masterClothAmountIds) && g.masterClothAmountIds.length) {
+        const mid = g.masterClothAmountIds[0];
+        try { masterPool = await MasterClothAmount.findById(mid).lean(); } catch (e) { masterPool = null; }
+      } else {
+        if (g.fabricType || g.itemType || g.unit) {
+          const q = {};
+          if (g.fabricType) q.fabricType = lowerTrim(g.fabricType);
+          if (g.itemType) q.itemType = lowerTrim(g.itemType);
+          if (g.unit) q.unitType = lowerTrim(g.unit);
+          masterPool = await MasterClothAmount.findOne(q).lean().catch(() => null);
+        }
+      }
+
+      results.push({
+        fabricType: g.fabricType ?? null,
+        itemType: g.itemType ?? null,
+        unit: g.unit ?? null,
+        totalAssigned: Number(g.totalAssigned || 0),
+        rows: Number(g.rows || 0),
+        clothAmountIds: (g.clothAmountIds || []).map(String),
+        masterClothAmountIds: (g.masterClothAmountIds || []).map(String),
+        available: typeof g.available === 'number' ? g.available : null,
+        masterClothAmountId: masterPool ? String(masterPool._id) : null,
+        masterBalance: masterPool ? (typeof masterPool.amount === 'number' ? masterPool.amount : 0) : null
+      });
+    }
+
+    return results;
   } catch (err) {
     console.error('computeMasterTotals failed:', err);
     return [];
@@ -62,9 +112,10 @@ const computeMasterTotals = async (tailorId) => {
 };
 
 const assignClothRoll = async (req, res) => {
-  const session = await mongoose.connection.startSession();
+  const session = await mongoose.startSession();
   try {
     const { tailorId, assignedDate, clothConsumptions, assignToMaster, masterTailorId } = req.body;
+    console.log('assignClothRoll: received body:', req.body);
 
     if (!tailorId) return res.status(400).json({ message: 'tailorId is required' });
     if (!isValidObjectId(tailorId)) return res.status(400).json({ message: 'tailorId is not a valid id' });
@@ -76,20 +127,17 @@ const assignClothRoll = async (req, res) => {
     const tailor = await User.findById(tailorId).lean();
     if (!tailor) return res.status(404).json({ message: 'Tailor not found' });
 
-    // Decide master assignment behavior (optional)
+    // Resolve masterTailorId: prefer payload masterTailorId, else env fallback
     const envMaster = process.env.MASTER_TAILOR_ID;
-    const wantMaster = Boolean(assignToMaster) || Boolean(envMaster && assignToMaster !== false);
-    const resolvedMasterId = (masterTailorId && isValidObjectId(masterTailorId)) ? String(masterTailorId) : (envMaster && isValidObjectId(envMaster) ? String(envMaster) : null);
+    const resolvedMasterId = masterTailorId 
+    const wantMaster = Boolean(resolvedMasterId);
 
-    //
-    // RESOLVE / ALLOCATE consumption rows into concrete processedConsumptions:
-    // - If row has clothAmountId or rollId: keep as-is
-    // - Otherwise: find matching ClothAmount docs (based on provided fabricType/itemType/unitType fields)
-    //   * if multiple docs match, allocate requested amount across them in FIFO order (using doc.amount)
-    //   * if not enough total available -> error row X
-    //
-    const processedConsumptions = []; // final list of rows with explicit clothAmountId or rollId
+    const processedConsumptions = [];
+    console.log('assignClothRoll: processing clothConsumptions:', clothConsumptions);
+    console.log('assignClothRoll: resolvedMasterId:', resolvedMasterId, 'wantMaster:', wantMaster);
+    console.log('assignClothRoll: tailorId:', tailorId);
 
+    // Resolve input rows into concrete clothAmountId / rollId rows
     for (let i = 0; i < clothConsumptions.length; i++) {
       const r = clothConsumptions[i];
       if (!r || typeof r !== 'object') {
@@ -98,7 +146,7 @@ const assignClothRoll = async (req, res) => {
       const unitRaw = (r.unitType || r.unit || 'meters');
       const unit = lowerTrim(unitRaw);
 
-      // If row already includes clothAmountId or rollId, accept (but still validate amount later)
+      // if explicit ids given, accept them
       if (r.clothAmountId || r.rollId) {
         processedConsumptions.push({
           clothAmountId: r.clothAmountId ? String(r.clothAmountId) : undefined,
@@ -111,7 +159,7 @@ const assignClothRoll = async (req, res) => {
         continue;
       }
 
-      // else attempt to resolve using fabricType/itemType/unitType
+      // otherwise, resolve via fabric/item aggregate against ClothAmount
       const fabricRaw = r.fabricType ?? "";
       const itemRaw = r.itemType ?? "";
       const fabric = lowerTrim(fabricRaw);
@@ -121,34 +169,24 @@ const assignClothRoll = async (req, res) => {
         return res.status(400).json({ message: `Row ${i + 1}: either clothAmountId/rollId must be provided OR fabricType/itemType must be present to resolve an aggregate clothAmount.` });
       }
 
-      // Build query with whichever fields are present (exact-match on provided fields)
       const query = {};
       if (fabric) query.fabricType = fabric;
       if (item) query.itemType = item;
       if (unit) query.unitType = unit;
 
-      // Find all matching ClothAmount docs (we will allocate across them)
-      const matches = await ClothAmount.find(query).sort({ _id: 1 }).lean();
-
-      if (!matches || matches.length === 0) {
-        // If we tried with unit filter and found nothing, try relaxing unit constraint (if unit was provided)
-        if (unit && (fabric || item)) {
-          const relaxedQuery = {};
-          if (fabric) relaxedQuery.fabricType = fabric;
-          if (item) relaxedQuery.itemType = item;
-          const matchesRelaxed = await ClothAmount.find(relaxedQuery).sort({ _id: 1 }).lean();
-          if (matchesRelaxed && matchesRelaxed.length) {
-            // use relaxed matches
-            matches.splice(0, matches.length, ...matchesRelaxed);
-          }
-        }
+      let matches = await ClothAmount.find(query).sort({ _id: 1 }).lean();
+      if ((!matches || matches.length === 0) && (fabric || item)) {
+        const relaxedQuery = {};
+        if (fabric) relaxedQuery.fabricType = fabric;
+        if (item) relaxedQuery.itemType = item;
+        const matchesRelaxed = await ClothAmount.find(relaxedQuery).sort({ _id: 1 }).lean();
+        if (matchesRelaxed && matchesRelaxed.length) matches = matchesRelaxed;
       }
 
       if (!matches || matches.length === 0) {
         return res.status(400).json({ message: `Row ${i + 1}: couldn't resolve a ClothAmount for fabric="${fabricRaw}" item="${itemRaw}" unit="${unitRaw}". Provide clothAmountId or create corresponding ClothAmount.` });
       }
 
-      // compute total available across matches
       let totalAvailableAcrossMatches = 0;
       matches.forEach(m => { totalAvailableAcrossMatches += (typeof m.amount === 'number' ? m.amount : 0); });
 
@@ -161,7 +199,7 @@ const assignClothRoll = async (req, res) => {
         return res.status(400).json({ message: `Row ${i + 1}: requested ${requestedAmount} exceeds aggregate available ${totalAvailableAcrossMatches} for matching ClothAmount(s).` });
       }
 
-      // Allocate across matches in FIFO (or doc order)
+      // split across matching ClothAmount docs in FIFO (_id asc) manner
       let remaining = requestedAmount;
       for (let m of matches) {
         if (remaining <= 0) break;
@@ -172,20 +210,18 @@ const assignClothRoll = async (req, res) => {
           clothAmountId: String(m._id),
           fabricType: m.fabricType ?? (r.fabricType || ""),
           itemType: m.itemType ?? (r.itemType || ""),
-          unitType: m.unitType ,
+          unitType: m.unitType,
           amount: Number(deduct)
         });
         remaining -= deduct;
       }
 
       if (remaining > 0) {
-        // This should not happen because of prior check, but guard anyway
         return res.status(400).json({ message: `Row ${i + 1}: unable to allocate full requested amount (${requestedAmount}), remaining ${remaining}` });
       }
-    } // end for each input row
+    }
 
-    // processedConsumptions now has rows each with clothAmountId OR rollId
-    // Build totals by clothAmountId & rollId (simple aggregation)
+    // Build totals to validate and deduct
     const totalsByClothAmount = {};
     const totalsByRoll = {};
     const clothAmountIdsSet = new Set();
@@ -213,56 +249,40 @@ const assignClothRoll = async (req, res) => {
       }
     }
 
-    // Helpers
     const toObjectIds = (arr) => arr.map((x) => new mongoose.Types.ObjectId(String(x)));
     const clothAmountObjectIds = Array.from(clothAmountIdsSet).length ? toObjectIds(Array.from(clothAmountIdsSet)) : [];
     const rollObjectIds = Array.from(rollIdsSet).length ? toObjectIds(Array.from(rollIdsSet)) : [];
 
-    // Now follow your existing transactional deduction flow, using totalsByClothAmount & totalsByRoll
+    // ---------- Transactional attempt ----------
     try {
       await session.startTransaction();
 
-      // Load cloth amounts
+      // Preload cloth amounts (read-check)
       const clothDocs = clothAmountObjectIds.length ? await ClothAmount.find({ _id: { $in: clothAmountObjectIds } }).session(session) : [];
       const clothMap = {};
       clothDocs.forEach(d => { clothMap[String(d._id)] = d; });
 
-      // validate cloth totals
       for (const [id, reqTotal] of Object.entries(totalsByClothAmount)) {
         const doc = clothMap[id];
-        if (!doc) {
-          await session.abortTransaction();
-          return res.status(404).json({ message: `ClothAmount not found: ${id}` });
-        }
+        if (!doc) { await session.abortTransaction(); return res.status(404).json({ message: `ClothAmount not found: ${id}` }); }
         const avail = typeof doc.amount === 'number' ? doc.amount : 0;
-        if (reqTotal > avail) {
-          await session.abortTransaction();
-          return res.status(400).json({ message: `Requested ${reqTotal} exceeds available ${avail} for ClothAmount ${id}` });
-        }
+        if (reqTotal > avail) { await session.abortTransaction(); return res.status(400).json({ message: `Requested ${reqTotal} exceeds available ${avail} for ClothAmount ${id}` }); }
       }
 
-      // Load rolls
+      // Preload rolls and referenced cloth amounts
       const rollDocs = rollObjectIds.length ? await ClothRoll.find({ _id: { $in: rollObjectIds } }).session(session) : [];
       const rollMap = {};
       rollDocs.forEach(r => { rollMap[String(r._id)] = r; });
 
-      // validate rolls and collect cloth amounts referenced by rolls
       const clothAmountsReferencedByRolls = new Set();
       for (const [id, reqTotal] of Object.entries(totalsByRoll)) {
         const rollDoc = rollMap[id];
-        if (!rollDoc) {
-          await session.abortTransaction();
-          return res.status(404).json({ message: `ClothRoll not found: ${id}` });
-        }
+        if (!rollDoc) { await session.abortTransaction(); return res.status(404).json({ message: `ClothRoll not found: ${id}` }); }
         const availRoll = typeof rollDoc.amount === 'number' ? rollDoc.amount : 0;
-        if (reqTotal > availRoll) {
-          await session.abortTransaction();
-          return res.status(400).json({ message: `Requested ${reqTotal} exceeds available ${availRoll} for ClothRoll ${id}` });
-        }
+        if (reqTotal > availRoll) { await session.abortTransaction(); return res.status(400).json({ message: `Requested ${reqTotal} exceeds available ${availRoll} for ClothRoll ${id}` }); }
         if (rollDoc.clothAmountId) clothAmountsReferencedByRolls.add(String(rollDoc.clothAmountId));
       }
 
-      // Ensure we have cloth docs referenced by rolls loaded too
       const referencedIds = Array.from(clothAmountsReferencedByRolls).filter(id => !clothMap[id]);
       if (referencedIds.length) {
         const referencedObjectIds = toObjectIds(referencedIds);
@@ -270,60 +290,67 @@ const assignClothRoll = async (req, res) => {
         referencedDocs.forEach(d => { clothMap[String(d._id)] = d; });
       }
 
-      // Validate combined total against cloth amounts referenced by rolls
+      // Validate combined roll+cloth requests
       for (const [rollId, reqTotal] of Object.entries(totalsByRoll)) {
         const rollDoc = rollMap[rollId];
         if (!rollDoc) continue;
         if (rollDoc.clothAmountId) {
           const caId = String(rollDoc.clothAmountId);
           const caDoc = clothMap[caId];
-          if (!caDoc) {
-            await session.abortTransaction();
-            return res.status(404).json({ message: `ClothAmount referenced by roll ${rollId} not found: ${caId}` });
-          }
+          if (!caDoc) { await session.abortTransaction(); return res.status(404).json({ message: `ClothAmount referenced by roll ${rollId} not found: ${caId}` }); }
           const rollContribution = reqTotal;
           const prevRequestedForCloth = totalsByClothAmount[caId] || 0;
           const totalRequestedAgainstCloth = prevRequestedForCloth + rollContribution;
           const availCA = typeof caDoc.amount === 'number' ? caDoc.amount : 0;
-          if (totalRequestedAgainstCloth > availCA) {
-            await session.abortTransaction();
-            return res.status(400).json({ message: `Requested via roll(${rollId}) + other rows (${totalRequestedAgainstCloth}) exceeds available ${availCA} for ClothAmount ${caId}` });
-          }
+          if (totalRequestedAgainstCloth > availCA) { await session.abortTransaction(); return res.status(400).json({ message: `Requested via roll(${rollId}) + other rows (${totalRequestedAgainstCloth}) exceeds available ${availCA} for ClothAmount ${caId}` }); }
         }
       }
 
-      // Apply deductions to clothAmounts
+      // --- Deduct clothAmounts atomically inside transaction ---
       const touchedClothAmountIds = new Set();
       for (const [id, reqTotal] of Object.entries(totalsByClothAmount)) {
-        const doc = clothMap[id];
-        doc.amount = (typeof doc.amount === 'number' ? doc.amount : 0) - Number(reqTotal);
-        if (doc.amount < 0) doc.amount = 0;
-        await doc.save({ session });
+        const updated = await ClothAmount.findOneAndUpdate(
+          { _id: id, amount: { $gte: Number(reqTotal) } },
+          { $inc: { amount: -Number(reqTotal) } },
+          { new: true, session }
+        );
+        if (!updated) {
+          await session.abortTransaction();
+          return res.status(400).json({ message: `Requested ${reqTotal} exceeds available for ClothAmount ${id}` });
+        }
         touchedClothAmountIds.add(id);
       }
 
-      // Apply deductions to rolls (and their clothAmount if referenced)
+      // --- Deduct rolls atomically and their referenced clothAmount if any ---
       const touchedRollIds = [];
       for (const [id, reqTotal] of Object.entries(totalsByRoll)) {
-        const rollDoc = rollMap[id];
-        rollDoc.amount = (typeof rollDoc.amount === 'number' ? rollDoc.amount : 0) - Number(reqTotal);
-        if (rollDoc.amount < 0) rollDoc.amount = 0;
-        await rollDoc.save({ session });
+        const updatedRoll = await ClothRoll.findOneAndUpdate(
+          { _id: id, amount: { $gte: Number(reqTotal) } },
+          { $inc: { amount: -Number(reqTotal) } },
+          { new: true, session }
+        );
+        if (!updatedRoll) {
+          await session.abortTransaction();
+          return res.status(400).json({ message: `Requested ${reqTotal} exceeds available for ClothRoll ${id}` });
+        }
         touchedRollIds.push(id);
 
-        if (rollDoc.clothAmountId) {
-          const caId = String(rollDoc.clothAmountId);
-          const caDoc = clothMap[caId];
-          if (caDoc) {
-            caDoc.amount = (typeof caDoc.amount === 'number' ? caDoc.amount : 0) - Number(reqTotal);
-            if (caDoc.amount < 0) caDoc.amount = 0;
-            await caDoc.save({ session });
-            touchedClothAmountIds.add(caId);
+        if (updatedRoll.clothAmountId) {
+          const caId = String(updatedRoll.clothAmountId);
+          const updatedCA = await ClothAmount.findOneAndUpdate(
+            { _id: caId, amount: { $gte: Number(reqTotal) } },
+            { $inc: { amount: -Number(reqTotal) } },
+            { new: true, session }
+          );
+          if (!updatedCA) {
+            await session.abortTransaction();
+            return res.status(400).json({ message: `Insufficient aggregate amount for ClothAmount ${caId} referenced by roll ${id}` });
           }
+          touchedClothAmountIds.add(caId);
         }
       }
 
-      // Create primary assignment with processedConsumptions (these have clothAmountId/rollId and amounts)
+      // Create primary assignment (child / target tailor)
       const assignmentData = {
         tailorId,
         assignedDate: assignedDate ? new Date(assignedDate) : new Date(),
@@ -342,21 +369,53 @@ const assignClothRoll = async (req, res) => {
         approvedAt: new Date(),
       };
 
-      const createdArr = await RollAssignment.create([assignmentData], { session });
-      const createdAssignment = createdArr[0];
+      const [createdAssignment] = await RollAssignment.create([assignmentData], { session });
 
-      // Optionally create master assignment (mirror) WITHOUT deducting stock again
+      // Optionally create master assignment & credit MasterClothAmount pools (same transaction)
       let masterAssignmentPopulated = null;
-      if (wantMaster && resolvedMasterId && isValidObjectId(resolvedMasterId) && String(resolvedMasterId) !== String(tailorId)) {
+      const createdMasterPoolIds = [];
+      if (wantMaster || isValidObjectId(resolvedMasterId) || String(resolvedMasterId) !== String(tailorId)) {
         const masterUser = await User.findById(resolvedMasterId).session(session).lean();
+        console.log('assignClothRoll: masterUser:', masterUser);
         if (!masterUser) {
           await session.abortTransaction();
           return res.status(404).json({ message: 'Master tailor id provided not found' });
         }
-        const masterData = {
-          tailorId: resolvedMasterId,
-          assignedDate: assignedDate ? new Date(assignedDate) : new Date(),
-          clothConsumptions: processedConsumptions.map((c) => ({
+
+        const masterConsumptions = [];
+        for (const c of processedConsumptions) {
+          const fabric = normalizeForMaster(c.fabricType);
+          const item = normalizeForMaster(c.itemType);
+          const unit = normalizeForMaster(c.unitType, 'meters');
+          const increment = Number(c.amount || c.approvedAmount || 0);
+          if (!isFinite(increment) || increment <= 0) continue;
+
+          const query = {
+            masterTailorId: new mongoose.Types.ObjectId(String(resolvedMasterId)),
+            fabricType: fabric,
+            itemType: item,
+            unitType: unit
+          };
+
+          const setOnInsert = {
+            masterTailorId: new mongoose.Types.ObjectId(String(resolvedMasterId)),
+            fabricType: fabric,
+            itemType: item,
+            unitType: unit,
+            clothAmountRef: c.clothAmountId ? new mongoose.Types.ObjectId(String(c.clothAmountId)) : null
+          };
+
+          const upsertResp = await MasterClothAmount.findOneAndUpdate(
+            query,
+            { $inc: { amount: increment }, $setOnInsert: setOnInsert },
+            { upsert: true, new: true, session }
+          );
+
+          console.log('assignClothRoll: upserted master pool:', upsertResp ? String(upsertResp._id) : upsertResp);
+          if (upsertResp && upsertResp._id) createdMasterPoolIds.push(String(upsertResp._id));
+
+          masterConsumptions.push({
+            masterClothAmountId: upsertResp ? upsertResp._id : undefined,
             clothAmountId: c.clothAmountId ? c.clothAmountId : undefined,
             rollId: c.rollId ? c.rollId : undefined,
             fabricType: c.fabricType ? String(c.fabricType).trim() : undefined,
@@ -365,24 +424,36 @@ const assignClothRoll = async (req, res) => {
             amount: Number(c.amount),
             approvedAmount: Number(c.amount),
             parentAssignmentId: createdAssignment._id,
-          })),
-          status: 'approved',
-          requestedBy: req.user?._id || null,
-          approvedBy: req.user?._id || null,
-          approvedAt: new Date(),
-        };
+          });
+        }
 
-        const masterArr = await RollAssignment.create([masterData], { session });
-        const masterAssignment = masterArr[0];
-        masterAssignmentPopulated = await populateAssignment(masterAssignment._id);
+        if (masterConsumptions.length) {
+          const masterData = {
+            tailorId: resolvedMasterId,
+            assignedDate: assignedDate ? new Date(assignedDate) : new Date(),
+            clothConsumptions: masterConsumptions,
+            status: 'approved',
+            requestedBy: req.user?._id || null,
+            approvedBy: req.user?._id || null,
+            approvedAt: new Date(),
+          };
+
+          const [masterAssignment] = await RollAssignment.create([masterData], { session });
+          masterAssignmentPopulated = await populateAssignment(masterAssignment._id);
+        }
       }
 
       await session.commitTransaction();
+      console.log('Transaction committed successfully for assignment:', String(createdAssignment._id));
+      console.log('Touched ClothAmount ids:', Array.from(touchedClothAmountIds));
+      console.log('Touched ClothRoll ids:', touchedRollIds);
+      console.log('Created MasterClothAmount ids:', createdMasterPoolIds);
 
       const populated = await populateAssignment(createdAssignment._id);
       const updatedClothAmounts = touchedClothAmountIds.size ? await ClothAmount.find({ _id: { $in: Array.from(touchedClothAmountIds) } }).lean() : [];
       const updatedRolls = touchedRollIds.length ? await ClothRoll.find({ _id: { $in: touchedRollIds } }).lean() : [];
-      const masterTotals = await computeMasterTotals(tailorId).catch(() => []);
+      const masterTotals = (wantMaster && resolvedMasterId) ? await computeMasterTotals(resolvedMasterId).catch(() => []) : await computeMasterTotals(tailorId).catch(() => []);
+      const updatedMasterPools = createdMasterPoolIds.length ? await MasterClothAmount.find({ _id: { $in: createdMasterPoolIds } }).lean() : [];
 
       return res.status(201).json({
         message: 'Assignment created and amounts deducted (transactional)',
@@ -391,19 +462,16 @@ const assignClothRoll = async (req, res) => {
         updatedClothAmounts,
         updatedRolls,
         masterTotals,
+        updatedMasterPools,
       });
-
     } catch (txErr) {
       console.error('Transaction attempt failed — falling back to non-transactional flow:', txErr);
       try { await session.abortTransaction(); } catch (e) {}
-      // fallback below
+      // fallback to non-transactional flow below
     }
 
-    // --------------------------
-    // Non-transactional fallback
-    // --------------------------
+    // ---------- Non-transactional fallback (keeps same semantics but without session) ----------
     try {
-      // Deduct cloth amounts atomically
       const applied = [];
       for (const [id, reqTotal] of Object.entries(totalsByClothAmount)) {
         const updated = await ClothAmount.findOneAndUpdate(
@@ -420,7 +488,6 @@ const assignClothRoll = async (req, res) => {
         applied.push({ id, deducted: Number(reqTotal) });
       }
 
-      // Deduct rolls and referenced cloth amounts
       const appliedRolls = [];
       const fallbackRollDocs = rollObjectIds.length ? await ClothRoll.find({ _id: { $in: rollObjectIds } }).lean() : [];
       const fallbackRollMap = {};
@@ -467,8 +534,8 @@ const assignClothRoll = async (req, res) => {
         }
       }
 
-      // Create assignment (non-transactional) using processedConsumptions
-      const assignmentData = {
+      // Create assignment (non-transactional)
+      const created = await RollAssignment.create({
         tailorId,
         assignedDate: assignedDate ? new Date(assignedDate) : new Date(),
         clothConsumptions: processedConsumptions.map((c) => ({
@@ -484,20 +551,50 @@ const assignClothRoll = async (req, res) => {
         requestedBy: req.user?._id || null,
         approvedBy: req.user?._id || null,
         approvedAt: new Date(),
-      };
+      });
 
-      const created = await RollAssignment.create(assignmentData);
       const populated = await populateAssignment(created._id);
 
-      // Optionally create master assignment (mirror) non-transactional
+      // Optionally create master assignment (non-transactional)
       let masterAssignmentPopulated = null;
-      if (wantMaster && resolvedMasterId && isValidObjectId(resolvedMasterId) && String(resolvedMasterId) !== String(tailorId)) {
+      const updatedMasterPoolIds = [];
+      if (wantMaster || isValidObjectId(resolvedMasterId)) {
         const masterUser = await User.findById(resolvedMasterId).lean();
+        console.log('Non-transactional fallback: masterUser:', masterUser);
         if (masterUser) {
-          const masterData = {
-            tailorId: resolvedMasterId,
-            assignedDate: assignedDate ? new Date(assignedDate) : new Date(),
-            clothConsumptions: processedConsumptions.map((c) => ({
+          const masterConsumptions = [];
+          for (const c of processedConsumptions) {
+            const fabric = normalizeForMaster(c.fabricType);
+            const item = normalizeForMaster(c.itemType);
+            const unit = normalizeForMaster(c.unitType, 'meters');
+            const increment = Number(c.amount || c.approvedAmount || 0);
+            if (!isFinite(increment) || increment <= 0) continue;
+
+            const query = {
+              masterTailorId: new mongoose.Types.ObjectId(String(resolvedMasterId)),
+              fabricType: fabric,
+              itemType: item,
+              unitType: unit
+            };
+            console.log('Non-transactional master pool query:', query, 'increment:', increment);
+            const setOnInsert = {
+              masterTailorId: new mongoose.Types.ObjectId(String(resolvedMasterId)),
+              fabricType: fabric,
+              itemType: item,
+              unitType: unit,
+              clothAmountRef: c.clothAmountId ? new mongoose.Types.ObjectId(String(c.clothAmountId)) : null
+            };
+
+            const upsertResp = await MasterClothAmount.findOneAndUpdate(
+              query,
+              { $inc: { amount: increment }, $setOnInsert: setOnInsert },
+              { upsert: true, new: true }
+            );
+            console.log('Non-transactional upserted master pool:', upsertResp ? String(upsertResp._id) : upsertResp);
+            if (upsertResp && upsertResp._id) updatedMasterPoolIds.push(String(upsertResp._id));
+
+            masterConsumptions.push({
+              masterClothAmountId: upsertResp._id,
               clothAmountId: c.clothAmountId ? c.clothAmountId : undefined,
               rollId: c.rollId ? c.rollId : undefined,
               fabricType: c.fabricType ? String(c.fabricType).trim() : undefined,
@@ -506,15 +603,21 @@ const assignClothRoll = async (req, res) => {
               amount: Number(c.amount),
               approvedAmount: Number(c.amount),
               parentAssignmentId: created._id,
-            })),
-            status: 'approved',
-            requestedBy: req.user?._id || null,
-            approvedBy: req.user?._id || null,
-            approvedAt: new Date(),
-          };
-
-          const masterCreated = await RollAssignment.create(masterData);
-          masterAssignmentPopulated = await populateAssignment(masterCreated._id);
+            });
+          }
+          console.log('Non-transactional masterConsumptions:', masterConsumptions);
+          if (masterConsumptions.length) {
+            const masterCreated = await RollAssignment.create({
+              tailorId: resolvedMasterId,
+              assignedDate: assignedDate ? new Date(assignedDate) : new Date(),
+              clothConsumptions: masterConsumptions,
+              status: 'approved',
+              requestedBy: req.user?._id || null,
+              approvedBy: req.user?._id || null,
+              approvedAt: new Date(),
+            });
+            masterAssignmentPopulated = await populateAssignment(masterCreated._id);
+          }
         }
       }
 
@@ -522,11 +625,19 @@ const assignClothRoll = async (req, res) => {
         ...Object.keys(totalsByClothAmount || {}),
         ...Array.from(rollIdsSet).map((rId) => (fallbackRollMap && fallbackRollMap[rId] && fallbackRollMap[rId].clothAmountId) || null).filter(Boolean),
       ]));
-
+      console.log('Touched clothAmounts (fallback):', touchedClothAmounts);
+      console.log('Touched rolls (fallback):', Array.from(rollIdsSet));
+      console.log('Updated master pool ids (fallback):', updatedMasterPoolIds);
       const updatedClothAmounts = touchedClothAmounts.length ? await ClothAmount.find({ _id: { $in: touchedClothAmounts } }).lean() : [];
       const updatedRolls = Array.from(rollIdsSet).length ? await ClothRoll.find({ _id: { $in: Array.from(rollIdsSet) } }).lean() : [];
-      const masterTotals = await computeMasterTotals(tailorId).catch(() => []);
-
+      const masterTotals = (wantMaster && resolvedMasterId) ? await computeMasterTotals(resolvedMasterId).catch(() => []) : await computeMasterTotals(tailorId).catch(() => []);
+      const updatedMasterPools = updatedMasterPoolIds.length ? await MasterClothAmount.find({ _id: { $in: updatedMasterPoolIds } }).lean() : [];
+      console.log('Non-transactional fallback completed successfully');
+      console.log('masterAssignmentPopulated:', masterAssignmentPopulated);
+      console.log('updatedMasterPools:', updatedMasterPools);
+      console.log('masterTotals', masterTotals);
+      console.log('updatedRolls', updatedRolls);
+      console.log('updatedClothAmounts', updatedClothAmounts);
       return res.status(201).json({
         message: 'Assignment created and amounts deducted (non-transactional fallback)',
         assignment: populated,
@@ -534,6 +645,7 @@ const assignClothRoll = async (req, res) => {
         updatedClothAmounts,
         updatedRolls,
         masterTotals,
+        updatedMasterPools,
       });
 
     } catch (fallbackErr) {

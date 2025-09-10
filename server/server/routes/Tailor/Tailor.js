@@ -55,7 +55,7 @@ router.get('/master/assignments', protect, tailor, getMasterAssignments);
 router.get('/assigned-cloth-rolls', AdminRoute, getAssignedClothRolls);
 
 router.post('/master/allocate-to-tailor', protect, tailor, masterAllocateToTailor);
-// Cloth Roll Assignment to Tailor
+// Cloth Roll Assignment to Master Tailor
 router.post('/assign-cloth-roll', AdminRoute, assignClothRoll);
 
 // Log usage data like garments/size, waste, returned cloth etc.
