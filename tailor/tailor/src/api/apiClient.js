@@ -2,10 +2,7 @@
 import axios from 'axios';
 
 // Decide API base URL based on current host
-const API_BASE_URL =
-  window.location.hostname === 'localhost'
-    ? 'http://localhost:4000/api'
-    : 'https://uae-project-1.onrender.com/api';
+const API_BASE_URL ='https://uae-project-1.onrender.com/api';
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
