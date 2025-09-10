@@ -114,9 +114,9 @@ const computeMasterTotals = async (tailorId) => {
 const assignClothRoll = async (req, res) => {
   const session = await mongoose.startSession();
   try {
-    const { tailorId, assignedDate, clothConsumptions, assignToMaster, masterTailorId } = req.body;
+    const { assignedDate, clothConsumptions, assignToMaster, masterTailorId } = req.body;
     console.log('assignClothRoll: received body:', req.body);
-
+    const tailorId = masterTailorId;
     if (!tailorId) return res.status(400).json({ message: 'tailorId is required' });
     if (!isValidObjectId(tailorId)) return res.status(400).json({ message: 'tailorId is not a valid id' });
 

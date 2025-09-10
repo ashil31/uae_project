@@ -57,6 +57,7 @@ const ClothRollFormModal = ({ isOpen, onClose, roll, onSaved }) => {
           return;
         }
         data.rollNo = formData.rollNo;
+        console.log("Adding new roll with data:", data);
         await dispatch(addClothRoll(data)).unwrap();
         toast.success("Cloth roll added successfully");
       } else {

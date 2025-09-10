@@ -38,6 +38,7 @@ export default function AssignRollsPage() {
       try {
         setLoadingRolls(true);
         const res = await apiClient.get("/tailors/master/assignments");
+        console.log(res.data);
         const payload = res?.data ?? {};
 
         if (Array.isArray(payload.masterTotals) && payload.masterTotals.length) {
@@ -124,6 +125,7 @@ export default function AssignRollsPage() {
       try {
         setLoadingTailors(true);
         const res = await apiClient.get("/tailors/assigned-all-tailor");
+        console.log(res.data);        
         const data = res?.data ?? {};
         const items = Array.isArray(data.tailors)
           ? data.tailors
