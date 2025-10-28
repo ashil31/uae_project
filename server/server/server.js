@@ -31,6 +31,7 @@ const corsOptions = {
     'http://localhost:5173',
     'https://uae-project.vercel.app',
     'https://uae-project-u3an.onrender.com',
+    'https://lookbook-ig0u.onrender.com',
     'https://uae-admin-zeta.vercel.app',
     'https://uae-project-qwho.vercel.app/login',
     'https://uae-project-tailor.onrender.com'
