@@ -2,7 +2,6 @@ import Assignment from '../../models/Assignment.js'; // Assuming you have an Ass
 import Order from '../../models/order.js';
 import Production from '../../models/Production.js'; // Assuming you have a Production model
 import Update from '../../models/Update.js';       // Assuming you have an Update model
-import Order from '../../models/order.js';         // Assuming you have an Order model
 // @desc    Get all work assigned to the logged-in tailor
 // @route   GET /api/tailors/my-work
 // @access  Private (Tailor)
@@ -12,7 +11,7 @@ export const getMyAssignedWork = async (req, res) => {
         // We get the tailor's ID from the authenticated user token
         const tailorId = req.user._id;
 
-        const assignments = await Order.find({ assignedTo: tailorId })
+        const orders = await Order.find({ assignedTo: tailorId })
             .sort({ createdAt: -1 });
 
     if (orders.length === 0) {
@@ -36,7 +35,7 @@ export const getMyAssignedWork = async (req, res) => {
 export const addDailyProduction = async (req, res) => {
     try {
         const { clothesMade, notes } = req.body;
-        const tailorId = req.user.userId;
+        const tailorId = req.user._id;
 
         if (!clothesMade || isNaN(clothesMade)) {
             return res.status(400).json({ message: 'A valid number of clothes made is required.' });
@@ -63,7 +62,7 @@ export const addDailyProduction = async (req, res) => {
 export const sendUpdateToMaster = async (req, res) => {
     try {
         const { message } = req.body;
-        const fromTailor = req.user.userId;
+        const fromTailor = req.user._id;
 
         if (!message) {
             return res.status(400).json({ message: 'Update message cannot be empty.' });
