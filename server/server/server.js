@@ -31,7 +31,8 @@ const corsOptions = {
     'http://localhost:5173',
     'https://uae-project.vercel.app',
     'https://uae-admin-zeta.vercel.app',
-    'https://tailor-uae.onrender.com'
+    'https://tailor-uae.onrender.com',
+    'https://admin-uae.onrender.com'
   ],
   methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE'],
   credentials: true,
