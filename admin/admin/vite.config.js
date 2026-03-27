@@ -2,19 +2,28 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "path";
 
-// https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
-  server: {
-    host: "::",
-    port: 8081,
-  },
   plugins: [
     react(),
-    mode === 'development'
+    mode === "development"
   ].filter(Boolean),
+
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
     },
   },
+
+  // ✅ DEV (local only)
+  server: {
+    host: "::",
+    port: 8081,
+  },
+
+  // ✅ PRODUCTION (Render)
+  preview: {
+    host: true,
+    port: process.env.PORT,
+    allowedHosts: "all"
+  }
 }));
