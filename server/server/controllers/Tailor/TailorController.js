@@ -1,4 +1,5 @@
 import Assignment from '../../models/Assignment.js'; // Assuming you have an Assignment model
+import Order from '../../models/order.js';
 import Production from '../../models/Production.js'; // Assuming you have a Production model
 import Update from '../../models/Update.js';       // Assuming you have an Update model
 import Order from '../../models/order.js';         // Assuming you have an Order model
@@ -7,14 +8,12 @@ import Order from '../../models/order.js';         // Assuming you have an Order
 // @access  Private (Tailor)
 // Tailor: Get all orders assigned to the logged-in tailor
 export const getMyAssignedWork = async (req, res) => {
-  try {
-    const tailorId = req.user.userId; // tailor's ObjectId from JWT
+    try {
+        // We get the tailor's ID from the authenticated user token
+        const tailorId = req.user._id;
 
-    // Find orders where this tailor is assigned
-    const orders = await Order.find({ assignedTo: tailorId })
-      .populate('products.productId', 'name images price category')
-      .populate('userId', 'firstName lastName email phone addresses') // optional: customer details
-      .sort({ createdAt: -1 });
+        const assignments = await Order.find({ assignedTo: tailorId })
+            .sort({ createdAt: -1 });
 
     if (orders.length === 0) {
       return res.status(404).json({ success: false, message: 'No work assigned to you yet.' });

@@ -1,10 +1,10 @@
-// controllers/masterController.js
+// server/controllers/masterController.js
 import mongoose from "mongoose";
 import RollAssignment from "../../models/rollAssignment.js";
 import ClothAmount from "../../models/clothAmount.js";
 import User from "../../models/user.js";
+import MasterClothAmount from "../../models/masterClothAmount.js";
 
-/* small helper */
 const isValidObjectId = (id) => {
   if (!id) return false;
   try {
@@ -14,31 +14,64 @@ const isValidObjectId = (id) => {
   }
 };
 
-/**
- * GET /tailors/master/assignments
- * Returns:
- *  - assignments: array of roll assignments (populated)
- *  - masterTotals: array of { clothAmountId, totalAssigned, available, fabricType, itemType, unit }
- *
- * The frontend expects clothConsumptions to include numeric approvedAmount, allocated and remaining fields.
- */
 export const getMasterAssignments = async (req, res) => {
   try {
-    // Fetch all master assignments (adjust filter if you want only status:'approved' or a date range)
-    const assignments = await RollAssignment.find({})
-      .populate("tailorId", "username firstName lastName name phone")
+    const { masterTailorId } = req.query;
+
+    let assignmentMatch = {};
+
+    const isMasterRole = (user) => {
+      if (!user) return false;
+      const r = (user.role || "").toString().trim();
+      return r.toLowerCase() === "mastertailor" || r === "MasterTailor";
+    };
+
+    if (masterTailorId) {
+      if (!isValidObjectId(masterTailorId)) {
+        return res.status(400).json({ success: false, message: 'masterTailorId is not a valid id' });
+      }
+      const user = await User.findById(masterTailorId).lean();
+      if (!user) {
+        return res.status(404).json({ success: false, message: 'Master tailor not found' });
+      }
+      if (!isMasterRole(user)) {
+        return res.status(403).json({ success: false, message: 'User is not a MasterTailor' });
+      }
+      assignmentMatch.tailorId = new mongoose.Types.ObjectId(String(masterTailorId));
+    } else {
+      const masters = await User.find({ role: "MasterTailor" }).select("_id").lean();
+      if (!masters || masters.length === 0) {
+        return res.json({
+          success: true,
+          assignments: [],
+          masterTotals: [],
+          summary: {
+            scopedToTailorId: null,
+            totalAssignments: 0,
+            totalConsumptionRows: 0,
+            totalAssignedAmount: 0,
+            distinctClothAmounts: 0,
+          },
+          perClothCount: []
+        });
+      }
+      assignmentMatch.tailorId = { $in: masters.map((m) => m._id) };
+    }
+
+    const assignments = await RollAssignment.find(assignmentMatch)
+      .populate("tailorId", "username firstName lastName name phone role")
       .populate("requestedBy", "username")
       .populate("approvedBy", "username")
       .populate("clothConsumptions.clothAmountId", "fabricType itemType unit amount serialNumber")
+      .populate("clothConsumptions.masterClothAmountId", "masterTailorId fabricType itemType unitType amount clothAmountRef")
       .sort({ createdAt: -1 })
       .lean();
 
-    // Normalize per-consumption numeric fields for frontend safety
-    const normalized = (assignments || []).map((a) => ({
+    const normalizedAssignments = (assignments || []).map((a) => ({
       ...a,
       clothConsumptions: (a.clothConsumptions || []).map((c) => {
         const approvedAmount = Number(c.approvedAmount ?? c.amount ?? 0);
-        const allocated = Number(c.allocated ?? c.allocation ?? 0); // in case some docs store allocated differently
+        const allocated = Number(c.allocated ?? c.allocation ?? 0);
         const remaining = Math.max(0, approvedAmount - allocated);
         return {
           ...c,
@@ -49,270 +82,187 @@ export const getMasterAssignments = async (req, res) => {
       }),
     }));
 
-    // Compute masterTotals: aggregate sums per clothAmountId
-    // Compute masterTotals: aggregate sums per clothAmountId but also capture consumption-level fields
-    const agg = await RollAssignment.aggregate([
+    // Aggregation grouping by fabric/item/unit as earlier but then attach MasterClothAmount doc info
+    const pipeline = [
+      { $match: assignmentMatch },
       { $unwind: "$clothConsumptions" },
       {
-        $group: {
-          _id: "$clothConsumptions.clothAmountId",
-          totalAssigned: { $sum: "$clothConsumptions.amount" },
-          // take the first non-null values from the consumption rows (if available)
-          fabricTypeFromConsumption: { $first: "$clothConsumptions.fabricType" },
-          itemTypeFromConsumption: { $first: "$clothConsumptions.itemType" },
-          unitTypeFromConsumption: { $first: "$clothConsumptions.unitType" },
-        },
-      },
-      // (optional) remove groups where _id is null if any stray rows exist
-      { $match: { _id: { $ne: null } } },
-      // lookup the ClothAmount doc for availability and canonical fields
-      {
         $lookup: {
-          from: "clothamounts",              // collection name - ensure this matches your actual collection name
-          localField: "_id",
+          from: "clothamounts",
+          localField: "clothConsumptions.clothAmountId",
           foreignField: "_id",
-          as: "clothDocs",
-        },
+          as: "consClothDoc"
+        }
       },
-      { $unwind: { path: "$clothDocs", preserveNullAndEmptyArrays: true } },
-      // project the shape we want
+      { $unwind: { path: "$consClothDoc", preserveNullAndEmptyArrays: true } },
+      {
+        $addFields: {
+          _fabric: {
+            $trim: {
+              input: {
+                $ifNull: [
+                  "$clothConsumptions.fabricType",
+                  "$consClothDoc.fabricType",
+                  "$consClothDoc.fabric",
+                  ""
+                ]
+              }
+            }
+          },
+          _item: {
+            $trim: {
+              input: {
+                $ifNull: [
+                  "$clothConsumptions.itemType",
+                  "$consClothDoc.itemType",
+                  "$consClothDoc.item",
+                  ""
+                ]
+              }
+            }
+          },
+          _unit: {
+            $trim: {
+              input: {
+                $ifNull: [
+                  "$clothConsumptions.unitType",
+                  "$consClothDoc.unit",
+                  "$consClothDoc.unitType",
+                  "meters"
+                ]
+              }
+            }
+          },
+          _approvedAmount: { $ifNull: ["$clothConsumptions.approvedAmount", "$clothConsumptions.amount", 0] },
+          _allocated: { $ifNull: ["$clothConsumptions.allocated", 0] },
+          _remaining: { $max: [{ $subtract: [{ $ifNull: ["$clothConsumptions.approvedAmount", "$clothConsumptions.amount", 0] }, { $ifNull: ["$clothConsumptions.allocated", 0] }] }, 0] },
+          _clothAmountId: "$clothConsumptions.clothAmountId",
+          _masterClothAmountId: "$clothConsumptions.masterClothAmountId"
+        }
+      },
+      {
+        $group: {
+          _id: {
+            fabricLower: { $toLower: { $ifNull: ["$_fabric", ""] } },
+            itemLower: { $toLower: { $ifNull: ["$_item", ""] } },
+            unitLower: { $toLower: { $ifNull: ["$_unit", "meters"] } }
+          },
+          fabricDisplay: { $first: "$_fabric" },
+          itemDisplay: { $first: "$_item" },
+          unitDisplay: { $first: "$_unit" },
+          totalAssigned: { $sum: "$_approvedAmount" },
+          totalRemaining: { $sum: "$_remaining" },
+          rows: { $sum: 1 },
+          clothAmountIds: { $addToSet: { $cond: [{ $ifNull: ["$_clothAmountId", false] }, "$_clothAmountId", null] } },
+          masterClothAmountIds: { $addToSet: { $cond: [{ $ifNull: ["$_masterClothAmountId", false] }, "$_masterClothAmountId", null] } }
+        }
+      },
+      {
+        $addFields: {
+          clothAmountIds: {
+            $filter: {
+              input: "$clothAmountIds",
+              as: "id",
+              cond: { $ne: ["$$id", null] }
+            }
+          },
+          masterClothAmountIds: {
+            $filter: {
+              input: "$masterClothAmountIds",
+              as: "id",
+              cond: { $ne: ["$$id", null] }
+            }
+          }
+        }
+      },
       {
         $project: {
-          _id: 1,
+          _id: 0,
+          key: "$_id",
+          fabricType: "$fabricDisplay",
+          itemType: "$itemDisplay",
+          unit: "$unitDisplay",
           totalAssigned: 1,
-          fabricTypeFromConsumption: 1,
-          itemTypeFromConsumption: 1,
-          unitTypeFromConsumption: 1,
-          clothDoc: "$clothDocs",
-        },
+          rows: 1,
+          clothAmountIds: 1,
+          masterClothAmountIds: 1,
+          available: { $ifNull: ["$totalRemaining", 0] }
+        }
       },
-    ]);
+      { $sort: { totalAssigned: -1 } }
+    ];
 
-    console.log("Aggregation result:", agg);
+    const grouped = await RollAssignment.aggregate(pipeline);
 
-    // Map to masterTotals using consumption fields first, falling back to clothDoc fields
-    const masterTotals = agg.map((a) => {
-      const id = String(a._id);
-      const doc = a.clothDoc ?? null;
-      // prefer consumption-level fields when present; fallback to clothDoc fields
-      const fabricType = a.fabricTypeFromConsumption ?? doc?.fabricType ?? doc?.fabric ?? doc?.fabric_type ?? null;
-      const itemType = a.itemTypeFromConsumption ?? doc?.itemType ?? doc?.item ?? doc?.item_type ?? null;
-      const unit = a.unitTypeFromConsumption ?? doc?.unit ?? doc?.unitType ?? null;
-      const available = doc && typeof doc.amount === "number" ? doc.amount : null;
+    // Attach master pool doc info (if any)
+    const masterTotals = [];
+    for (const g of grouped) {
+      let masterPool = null;
+      if (Array.isArray(g.masterClothAmountIds) && g.masterClothAmountIds.length) {
+        try {
+          masterPool = await MasterClothAmount.findById(g.masterClothAmountIds[0]).lean();
+        } catch (e) {
+          masterPool = null;
+        }
+      } else {
+        // fallback - attempt lookup by normalized keys
+        const fabric = g.fabricType ? g.fabricType.toString().trim().toLowerCase() : "";
+        const item = g.itemType ? g.itemType.toString().trim().toLowerCase() : "";
+        const unit = g.unit ? g.unit.toString().trim().toLowerCase() : "meters";
+        if (fabric || item) {
+          masterPool = await MasterClothAmount.findOne({ fabricType: fabric, itemType: item, unitType: unit }).lean().catch(() => null);
+        }
+      }
 
-      return {
-        clothAmountId: id,
-        totalAssigned: Number(a.totalAssigned || 0),
-        available,
-        fabricType,
-        itemType,
-        unit,
-        clothDoc: doc,
-      };
-    });
+      masterTotals.push({
+        fabricType: g.fabricType || null,
+        itemType: g.itemType || null,
+        unit: g.unit || null,
+        totalAssigned: Number(g.totalAssigned || 0),
+        rows: Number(g.rows || 0),
+        clothAmountIds: (g.clothAmountIds || []).map((id) => String(id)),
+        masterClothAmountIds: (g.masterClothAmountIds || []).map((id) => String(id)),
+        available: typeof g.available === "number" ? g.available : null,
+        masterClothAmountId: masterPool ? String(masterPool._id) : null,
+        masterBalance: masterPool ? (typeof masterPool.amount === "number" ? masterPool.amount : 0) : null,
+      });
+    }
 
+    const totalAssignments = normalizedAssignments.length;
+    const totalConsumptionRows = normalizedAssignments.reduce((acc, a) => acc + (a.clothConsumptions ? a.clothConsumptions.length : 0), 0);
+    const totalAssignedAmount = normalizedAssignments.reduce((acc, a) => {
+      const sumForAssignment = (a.clothConsumptions || []).reduce((s, c) => s + (Number(c.approvedAmount ?? c.amount ?? 0)), 0);
+      return acc + sumForAssignment;
+    }, 0);
+    const distinctClothAmounts = masterTotals.reduce((acc, m) => acc + (Array.isArray(m.clothAmountIds) ? m.clothAmountIds.length : 0), 0);
 
-    console.log(masterTotals);
+    const perClothCount = masterTotals.map((m) => ({
+      fabricType: m.fabricType,
+      itemType: m.itemType,
+      unit: m.unit,
+      totalAssigned: m.totalAssigned,
+      rows: m.rows,
+      available: m.available,
+      clothAmountIds: m.clothAmountIds,
+      masterClothAmountId: m.masterClothAmountId,
+      masterBalance: m.masterBalance,
+    }));
 
     return res.json({
       success: true,
-      assignments: normalized,
+      assignments: normalizedAssignments,
       masterTotals,
+      summary: {
+        scopedToTailorId: masterTailorId ?? null,
+        totalAssignments,
+        totalConsumptionRows,
+        totalAssignedAmount,
+        distinctClothAmounts,
+      },
+      perClothCount,
     });
   } catch (err) {
     console.error("getMasterAssignments error:", err && err.stack ? err.stack : err);
     return res.status(500).json({ success: false, message: "Server error fetching master assignments" });
-  }
-};
-
-/**
- * POST /tailors/master/allocate
- * Payload expected (example):
- * {
- *   parentAssignmentId?: String,        // optional - when allocating from a specific parent assignment consumption
- *   parentConsumptionId?: String,      // optional
- *   targetTailorId: String,            // required
- *   amount: Number,                    // required
- *   unitType: String,                  // optional (default 'meters')
- *   fabricType?: String,
- *   itemType?: String,
- *   note?: String
- * }
- *
- * Behaviour:
- *  - find clothAmountId when parentConsumptionId provided; else attempt best-effort match using fabricType+itemType.
- *  - deduct cloth amount from ClothAmount.amount (transaction if possible).
- *  - create a RollAssignment (status: 'allocated'/'approved') pointing to targetTailorId and containing the consumption row.
- *  - return allocation doc + updatedClothAmounts (for frontend to refresh rolls).
- */
-export const masterAllocate = async (req, res) => {
-  const session = await mongoose.startSession();
-  try {
-    const { parentAssignmentId, parentConsumptionId, targetTailorId, amount, unitType = "meters", fabricType, itemType, note } = req.body;
-
-    if (!targetTailorId || !isValidObjectId(targetTailorId)) {
-      return res.status(400).json({ success: false, message: "targetTailorId is required and must be a valid id" });
-    }
-    const amt = Number(amount);
-    if (!isFinite(amt) || amt <= 0) {
-      return res.status(400).json({ success: false, message: "amount must be a positive number" });
-    }
-
-    // Find clothAmountId:
-    let clothAmountId = null;
-    if (parentAssignmentId && parentConsumptionId) {
-      // try to resolve from the parent assignment's consumption
-      if (!isValidObjectId(parentAssignmentId) || !isValidObjectId(parentConsumptionId)) {
-        return res.status(400).json({ success: false, message: "parent ids must be valid" });
-      }
-      const parent = await RollAssignment.findById(parentAssignmentId).lean();
-      const consumption = (parent?.clothConsumptions || []).find((c) => String(c._id) === String(parentConsumptionId));
-      clothAmountId = consumption?.clothAmountId ?? null;
-    }
-
-    // If still not found, try to match a ClothAmount by fabricType + itemType with sufficient available amount
-    if (!clothAmountId) {
-      if (!fabricType && !itemType) {
-        return res.status(400).json({ success: false, message: "Either parentConsumptionId or fabricType/itemType is required to resolve clothAmount" });
-      }
-      // best-effort: find first cloth that matches fabricType/itemType with amount >= requested
-      const query = {};
-      if (fabricType) query.$or = [{ fabricType }, { fabric: fabricType }, { fabric_type: fabricType }];
-      if (itemType) {
-        query.$or = query.$or ? [...query.$or, { itemType }, { item: itemType }, { item_type: itemType }] : [{ itemType }, { item: itemType }, { item_type: itemType }];
-      }
-      // prefer those with sufficient amount, fallback to any
-      let found = await ClothAmount.findOne({ ...query, amount: { $gte: amt } }).lean();
-      if (!found) found = await ClothAmount.findOne(query).lean();
-      if (!found) {
-        return res.status(404).json({ success: false, message: "No matching cloth amount found for allocation" });
-      }
-      clothAmountId = String(found._id);
-    }
-
-    // start transaction
-    try {
-      await session.startTransaction();
-
-      // lock and validate clothAmount
-      const cloth = await ClothAmount.findOne({ _id: clothAmountId }).session(session);
-      if (!cloth) {
-        await session.abortTransaction();
-        return res.status(404).json({ success: false, message: "ClothAmount not found" });
-      }
-      const available = typeof cloth.amount === "number" ? cloth.amount : 0;
-      if (amt > available) {
-        await session.abortTransaction();
-        return res.status(400).json({ success: false, message: `Not enough cloth available. Requested ${amt}, available ${available}` });
-      }
-
-      cloth.amount = available - amt;
-      if (cloth.amount < 0) cloth.amount = 0;
-      await cloth.save({ session });
-
-      // build allocation (a RollAssignment entry)
-      const allocation = {
-        tailorId: targetTailorId,
-        assignedDate: new Date(),
-        clothConsumptions: [
-          {
-            clothAmountId,
-            fabricType: fabricType ?? cloth.fabricType ?? cloth.fabric,
-            itemType: itemType ?? cloth.itemType ?? cloth.item,
-            unitType: unitType ?? cloth.unit ?? "meters",
-            amount: amt,
-            approvedAmount: amt,
-            note: note ?? undefined,
-            parentAssignmentId: parentAssignmentId ?? undefined,
-            parentConsumptionId: parentConsumptionId ?? undefined,
-          },
-        ],
-        status: "allocated",
-        requestedBy: req.user?._id || null,
-        approvedBy: req.user?._id || null,
-        approvedAt: new Date(),
-      };
-
-      const createdArr = await RollAssignment.create([allocation], { session });
-      const created = createdArr[0];
-
-      await session.commitTransaction();
-
-      // populate created allocation for response
-      const populated = await RollAssignment.findById(created._id)
-        .populate("tailorId", "username firstName lastName name phone")
-        .populate("clothConsumptions.clothAmountId", "fabricType itemType unit amount serialNumber")
-        .lean();
-
-      // return updated cloth amounts for frontend to refresh rolls list
-      const updatedClothAmounts = await ClothAmount.find({ _id: clothAmountId }).lean();
-
-      return res.status(201).json({
-        success: true,
-        message: "Allocation created",
-        allocation: populated,
-        updatedClothAmounts,
-      });
-    } catch (txErr) {
-      console.error("masterAllocate transaction failed, attempting fallback:", txErr && txErr.stack ? txErr.stack : txErr);
-      try {
-        await session.abortTransaction();
-      } catch (ab) {
-        console.error("abortTransaction error:", ab && ab.stack ? ab.stack : ab);
-      }
-      // fallback non-transactional optimistic update
-      const updated = await ClothAmount.findOneAndUpdate(
-        { _id: clothAmountId, amount: { $gte: amt } },
-        { $inc: { amount: -amt } },
-        { new: true }
-      ).lean();
-      if (!updated) {
-        return res.status(400).json({ success: false, message: "Insufficient amount for allocation (fallback)" });
-      }
-      const created = await RollAssignment.create({
-        tailorId: targetTailorId,
-        assignedDate: new Date(),
-        clothConsumptions: [
-          {
-            clothAmountId,
-            fabricType: fabricType ?? updated.fabricType ?? updated.fabric,
-            itemType: itemType ?? updated.itemType ?? updated.item,
-            unitType: unitType ?? updated.unit ?? "meters",
-            amount: amt,
-            approvedAmount: amt,
-            note: note ?? undefined,
-            parentAssignmentId: parentAssignmentId ?? undefined,
-            parentConsumptionId: parentConsumptionId ?? undefined,
-          },
-        ],
-        status: "allocated",
-        requestedBy: req.user?._id || null,
-        approvedBy: req.user?._id || null,
-        approvedAt: new Date(),
-      });
-      const populated = await RollAssignment.findById(created._id)
-        .populate("tailorId", "username firstName lastName name phone")
-        .populate("clothConsumptions.clothAmountId", "fabricType itemType unit amount serialNumber")
-        .lean();
-      return res.status(201).json({
-        success: true,
-        message: "Allocation created (fallback)",
-        allocation: populated,
-        updatedClothAmounts: [updated],
-      });
-    }
-  } catch (err) {
-    console.error("masterAllocate outer error:", err && err.stack ? err.stack : err);
-    const isDev = process.env.NODE_ENV !== "production";
-    return res.status(500).json({
-      success: false,
-      message: isDev ? (err && err.stack ? err.stack : String(err)) : "Internal server error",
-    });
-  } finally {
-    try {
-      await session.endSession();
-    } catch (e) {
-      console.error("endSession failed:", e && e.stack ? e.stack : e);
-    }
   }
 };

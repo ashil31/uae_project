@@ -493,8 +493,9 @@ export const getUnassignedOrders = async (req, res) => {
 export const rejectAssignedOrder = async (req, res) => {
   try {
     const { orderId } = req.params;
-
+    console.log(orderId);    
     const order = await Order.findById(orderId);
+    console.log(order);    
     if (!order) {
       return res.status(404).json({ success: false, message: "Order not found" });
     }
