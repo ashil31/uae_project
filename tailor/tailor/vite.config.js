@@ -5,9 +5,12 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   server: {
+    port: 8080, // Explicitly define the port for the tailor app
     proxy: {
       '/api': {
-        target: 'http://localhost:4000', // <-- Change this port to 4000
+        // Proxy requests starting with /api to the backend server at port 4000.
+        // This is primarily for development to avoid CORS issues.
+        target: 'http://localhost:4000', 
         changeOrigin: true,
       },
     }
