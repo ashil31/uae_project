@@ -1,18 +1,24 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
+
+  // DEV (local)
   server: {
-    port: 8080, // Explicitly define the port for the tailor app
+    port: 8080,
     proxy: {
       '/api': {
-        // Proxy requests starting with /api to the backend server at port 4000.
-        // This is primarily for development to avoid CORS issues.
-        target: 'http://localhost:4000', 
+        target: 'http://localhost:4000',
         changeOrigin: true,
       },
     }
+  },
+
+  // ✅ ADD THIS (for Render / production)
+  preview: {
+    host: true,
+    port: process.env.PORT,
+    allowedHosts: 'all'
   }
 })
