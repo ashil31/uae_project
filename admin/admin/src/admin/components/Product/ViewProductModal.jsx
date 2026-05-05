@@ -105,6 +105,7 @@ const ViewProductModal = ({ isOpen, onClose, product }) => {
                               className="w-full h-full object-cover"
                               loading='lazy'
                               onError={(e) => {
+                                e.target.onerror = null;
                                 e.target.src = '/placeholder-product.jpg';
                                 e.target.onerror = null;
                               }}

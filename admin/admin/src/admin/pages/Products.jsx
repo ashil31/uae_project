@@ -317,6 +317,7 @@ const Products = () => {
               alt={product.images?.[0]?.altText || product.name}
               className="w-full h-full object-cover"
               onError={(e) => {
+                e.target.onerror = null;
                 e.target.src = "/placeholder-product.jpg";
               }}
             />

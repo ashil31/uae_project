@@ -875,6 +875,7 @@ const EditProductModal = ({ isOpen, onClose, product }) => {
                                                     alt={image.altText}
                                                     className="w-full h-40 object-cover"
                                                     onError={(e) => {
+                                                        e.target.onerror = null;
                                                         e.target.src = '/placeholder-product.jpg';
                                                     }}
                                                 />
